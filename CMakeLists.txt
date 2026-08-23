@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(vermell)
+project(vermell VERSION 1.0.4)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -78,9 +78,21 @@ if (TESTING)
 
 endif ()
 
+include(GNUInstallDirs)
 install(TARGETS vermell
-        ARCHIVE DESTINATION lib
-        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/include/vermell" DESTINATION include)
-install(FILES "${CMAKE_SOURCE_DIR}/README.md" DESTINATION share/doc/vermell)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/include/vermell" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES "${CMAKE_SOURCE_DIR}/README.md" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/vermell)
+
+
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "libvermell")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version of the generated package (overridable with -DCPACK_PACKAGE_VERSION=...)")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "User-friendly and compact C++20 Web Framework")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/vermellcc/vermell")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Kevin Bohorquez - kevin@bohorquez.cc")
+set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+include(CPack)

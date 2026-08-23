@@ -36,3 +36,8 @@ Makefile
 # Archivos de configuración específicos del sistema
 CMakeUserPresets.json
 CMakeSettings.json
+
+# Paquetes y staging generados por CPack (.deb para el repo apt)
+_CPack_Packages/
+*.deb
+*.rpm

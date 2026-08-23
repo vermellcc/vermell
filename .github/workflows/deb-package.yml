@@ -1,0 +1,181 @@
+name: Build & publish Debian packages (.deb + apt repo)
+
+on:
+  release:
+    types: [ published ]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+
+  build-deb:
+    name: Build .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            toolchain: ""
+            cross_pkg: ""
+          - arch: arm64
+            toolchain: cmake/aarch64-linux-gnu.cmake
+            cross_pkg: g++-aarch64-linux-gnu
+          - arch: armhf
+            toolchain: cmake/arm-linux-gnueabihf.cmake
+            cross_pkg: g++-arm-linux-gnueabihf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake dpkg-dev apt-utils gnupg \
+            ${{ matrix.cross_pkg }}
+
+      - name: Derive version from tag
+        id: version
+
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure CMake (Release, native)
+        if: matrix.toolchain == ''
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                    -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Configure CMake (Release, cross-compiled)
+        if: matrix.toolchain != ''
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                    -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }} \
+                    -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
+                    -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=${{ matrix.arch }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Generate .deb with CPack
+        run: cpack --config build/CPackConfig.cmake
+
+      - name: Inspect package
+        run: |
+          ls -la build/*.deb
+          dpkg-deb --info build/*.deb
+
+      - name: Upload .deb as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvermell-deb-${{ matrix.arch }}
+          path: build/*.deb
+          if-no-files-found: error
+
+
+  attach-release:
+    name: Attach .deb files to GitHub Release
+    if: github.event_name == 'release'
+    needs: build-deb
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: libvermell-deb-*
+          merge-multiple: true
+          path: debs
+
+      - name: Attach to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: debs/*.deb
+
+  publish-pages:
+    name: Publish apt repository to GitHub Pages
+    needs: build-deb
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download all .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: libvermell-deb-*
+          merge-multiple: true
+          path: debs
+
+      - name: Install dependencies (apt-ftparchive, gpg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+
+      - name: Assemble apt repository layout
+        run: |
+          set -euo pipefail
+          for a in amd64 arm64 armhf; do
+            mkdir -p "apt-repo/pool/main/v/vermell/$a"
+            mkdir -p "apt-repo/dists/stable/main/binary-$a"
+          done
+          for a in amd64 arm64 armhf; do
+            cp debs/*_${a}.deb "apt-repo/pool/main/v/vermell/$a/"
+          done
+
+      - name: Generate Packages indexes
+        run: |
+          set -euo pipefail
+          cd apt-repo
+          for a in amd64 arm64 armhf; do
+            apt-ftparchive packages "pool/main/v/vermell/$a" > "dists/stable/main/binary-$a/Packages"
+            gzip -9 -kf "dists/stable/main/binary-$a/Packages"
+          done
+
+      - name: Generate Release file
+        run: |
+          set -euo pipefail
+          cd apt-repo
+          apt-ftparchive release \
+            -o APT::FTPArchive::Release::Origin="vermellcc" \
+            -o APT::FTPArchive::Release::Label="vermell apt repository" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64 armhf" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Description="Vermell C++20 web framework packages" \
+            dists/stable > dists/stable/Release
+
+      - name: Sign Release (optional, requires APT_GPG_PRIVATE_KEY secret)
+        if: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          cd apt-repo
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_OPT=(gpg --batch --yes)
+          if [ -n "$APT_GPG_PASSPHRASE" ]; then
+            GPG_OPT+=(--pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE")
+          fi
+          "${GPG_OPT[@]}" --clearsign -o dists/stable/InRelease dists/stable/Release
+          "${GPG_OPT[@]}" --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repo
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
