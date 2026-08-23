@@ -6,14 +6,14 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: write   
+  pages: write      
+  id-token: write   
 
 jobs:
-
   build-deb:
     name: Build .deb (${{ matrix.arch }})
     runs-on: ubuntu-latest
@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   
 
       - name: Install dependencies
         run: |
@@ -44,8 +46,17 @@ jobs:
 
       - name: Derive version from tag
         id: version
-
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            # manual run: latest reachable tag, e.g. v1.0.5 -> 1.0.5
+            VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0')"
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Configure CMake (Release, native)
         if: matrix.toolchain == ''
@@ -77,10 +88,9 @@ jobs:
           path: build/*.deb
           if-no-files-found: error
 
-
   attach-release:
     name: Attach .deb files to GitHub Release
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     needs: build-deb
     runs-on: ubuntu-latest
 
@@ -92,10 +102,24 @@ jobs:
           merge-multiple: true
           path: debs
 
-      - name: Attach to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: debs/*.deb
+      - name: Attach to Release (gh CLI)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Attaching .deb files to release: $RELEASE_TAG"
+            gh release upload "$RELEASE_TAG" debs/*.deb --clobber
+          else
+            echo "::notice::Release $RELEASE_TAG not found - skipping attach"
+          fi
 
   publish-pages:
     name: Publish apt repository to GitHub Pages
@@ -153,12 +177,16 @@ jobs:
             dists/stable > dists/stable/Release
 
       - name: Sign Release (optional, requires APT_GPG_PRIVATE_KEY secret)
-        if: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
         env:
           APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
           APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
+          # skip signing when the secret is not configured (no error)
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::notice::APT_GPG_PRIVATE_KEY not set - apt repo published UNSIGNED (use [trusted=yes])"
+            exit 0
+          fi
           cd apt-repo
           echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
           GPG_OPT=(gpg --batch --yes)
