@@ -3,9 +3,6 @@ name: Build & publish Debian packages (.deb + apt repo)
 on:
   release:
     types: [ published ]
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -196,6 +193,8 @@ jobs:
           fi
           "${GPG_OPT[@]}" --clearsign -o dists/stable/InRelease dists/stable/Release
           "${GPG_OPT[@]}" --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+          gpg --armor --export > vermell-apt-key.asc
+          gpg --export > vermell-apt-key.gpg
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
