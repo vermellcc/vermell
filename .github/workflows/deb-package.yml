@@ -60,16 +60,18 @@ jobs:
 
       - name: Configure CMake (Release, native)
         if: matrix.toolchain == ''
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release \
-                    -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }} \
-                    -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=${{ matrix.arch }}
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }} \
+            -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=${{ matrix.arch }}
 
       - name: Configure CMake (Release, cross-compiled)
         if: matrix.toolchain != ''
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release \
-                    -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }} \
-                    -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
-                    -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=${{ matrix.arch }}
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCPACK_PACKAGE_VERSION=${{ steps.version.outputs.version }} \
+            -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
+            -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=${{ matrix.arch }}
 
       - name: Build
         run: cmake --build build --parallel
@@ -106,6 +108,7 @@ jobs:
       - name: Attach to Release (gh CLI)
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "release" ]; then
