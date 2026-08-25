@@ -1,0 +1,5 @@
+vermell (1.0.5-1) unstable; urgency=medium
+
+  * Initial Debian packaging (not yet uploaded).
+
+ -- Kevin Bohorquez <kevin@bohorquez.cc>  Sun, 23 Aug 2026 22:36:03 -0500

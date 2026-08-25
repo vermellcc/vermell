@@ -1,0 +1,29 @@
+Source: vermell
+Section: libs
+Priority: optional
+Maintainer: Kevin Bohorquez <kevin@bohorquez.cc>
+Build-Depends: debhelper-compat (= 13), cmake
+Standards-Version: 4.7.0
+Homepage: https://github.com/vermellcc/vermell
+Vcs-Git: https://github.com/vermellcc/vermell.git
+Vcs-Browser: https://github.com/vermellcc/vermell
+Rules-Requires-Root: no
+
+Package: libvermell1
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: C++20 web framework (shared library)
+ Vermell is a user-friendly and compact C++20 web framework.
+ .
+ This package contains the shared runtime library (libvermell.so.1).
+
+Package: libvermell-dev
+Section: libdevel
+Architecture: any
+Depends: libvermell1 (= ${binary:Version}), ${misc:Depends}
+Description: C++20 web framework (development files)
+ Vermell is a user-friendly and compact C++20 web framework.
+ .
+ This package contains the headers and development files needed to
+ build applications against vermell.

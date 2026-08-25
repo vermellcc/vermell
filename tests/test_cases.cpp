@@ -609,7 +609,7 @@ TEST(SecureRenderUnit, ReadBoundedAcceptsExactlyMaxBytes) {
 
 TEST(SecureRenderUnit, BasicReadRejectsNonRegularFiles) {
      // A directory is not a file: the legacy reader served an empty 200.
-     auto [data, status] = BasicRead::processing("/tmp");
+     auto [data, status] = BasicRead::processing("/libvermell1");
      EXPECT_EQ(status, "403");
      EXPECT_TRUE(data.empty() || data.find("<") == string::npos || data.find("&lt;") != string::npos);
 }

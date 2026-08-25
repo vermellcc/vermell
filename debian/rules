@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+
+# Debian convention: ship a shared library. The TESTING block currently uses
+# FetchContent (googletest/curl), which is not allowed in Debian, so it is
+# disabled here; enable it against system packages later if you add tests.
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- -DBUILD_SHARED_LIBS=ON -DTESTING=OFF

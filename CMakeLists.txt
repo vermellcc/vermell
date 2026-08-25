@@ -1,12 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
-project(vermell VERSION 1.0.4)
+project(vermell VERSION 1.0.5)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build")
 
 set(VERMELL_HARDENING_FLAGS "-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE")
 
@@ -22,7 +18,12 @@ file(GLOB_RECURSE SOURCES
 file(GLOB_RECURSE HEADERS
         "${CMAKE_SOURCE_DIR}/include/vermell/*.h"
 )
-add_library(vermell STATIC ${SOURCES} ${HEADERS})
+# Shared when -DBUILD_SHARED_LIBS=ON (Debian), static otherwise (GitHub CI default).
+add_library(vermell ${SOURCES} ${HEADERS})
+set_target_properties(vermell PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 1
+)
 target_include_directories(vermell PUBLIC "${CMAKE_SOURCE_DIR}/include")
 
 option(TESTING "Enable testing" OFF)
@@ -86,6 +87,17 @@ install(TARGETS vermell
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/include/vermell" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES "${CMAKE_SOURCE_DIR}/README.md" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/vermell)
 
+
+if(NOT TARGET uninstall)
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/uninstall.cmake.in"
+        "${CMAKE_BINARY_DIR}/uninstall.cmake"
+        IMMEDIATE @ONLY
+    )
+    add_custom_target(uninstall
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_BINARY_DIR}/uninstall.cmake"
+    )
+endif()
 
 set(CPACK_GENERATOR "DEB")
 set(CPACK_PACKAGE_NAME "libvermell")

@@ -79,6 +79,22 @@ $ npx create-vermell-static
 $ docker pull vermellcc/vermell
 ```
 
+### APT (Debian/Ubuntu)
+
+[![Debian](https://img.shields.io/badge/Debian-A81D33?style=for-the-badge&logo=debian&logoColor=white)](#)
+
+Packages for `amd64`, `arm64` and `armhf` live on GitHub Pages, signed and ready to add:
+
+```shell
+$ sudo install -d -m 0755 /etc/apt/keyrings
+$ curl -fsSL https://vermellcc.github.io/vermell/vermell-apt-key.asc | sudo gpg --dearmor --yes -o /etc/apt/keyrings/vermell.gpg
+$ echo "deb [signed-by=/etc/apt/keyrings/vermell.gpg] https://vermellcc.github.io/vermell stable main" | sudo tee /etc/apt/sources.list.d/vermell.list
+$ sudo apt-get update
+$ sudo apt-get install -y libvermell
+```
+
+> Key fingerprint: `022D 56AA 7A6B 2028 B005  3629 F616 54D8 8AD1 C323`
+
 ## Quick Start
 
 A Vermell server is a `Router`: register a handler for a route, choose a port, and call `listen()`.

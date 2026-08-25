@@ -275,7 +275,7 @@ private:
     [[nodiscard]] static string tmp_base() {
         if (const char* env = std::getenv("TMPDIR"); env != nullptr && env[0] != '\0')
             return env;
-        return "/tmp";
+        return "/libvermell1";
     }
 
     [[nodiscard]] static TempDir make_temp_dir() {
