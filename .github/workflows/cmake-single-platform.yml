@@ -5,8 +5,24 @@ name: CMake on a single platform
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.MD'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'LICENCE'
+      - '.gitignore'
+      - '.deepsource.toml'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.MD'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'LICENCE'
+      - '.gitignore'
+      - '.deepsource.toml'
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)

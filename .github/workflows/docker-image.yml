@@ -1,8 +1,16 @@
 name: Docker Hub CI
 on:
   push:
-    branches: [ "main" ]  
-    tags: [ "v*.*.*" ]      
+    branches: [ "main" ]
+    tags: [ "v*.*.*" ]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.MD'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'LICENCE'
+      - '.gitignore'
+      - '.deepsource.toml'
 
 jobs:
   build-and-push:

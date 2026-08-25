@@ -88,7 +88,7 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/include/vermell" DESTINATION ${CMAKE_INST
 install(FILES "${CMAKE_SOURCE_DIR}/README.md" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/vermell)
 
 
-if(NOT TARGET uninstall)
+if(NOT TARGET uninstall AND EXISTS "${CMAKE_SOURCE_DIR}/cmake/uninstall.cmake.in")
     configure_file(
         "${CMAKE_SOURCE_DIR}/cmake/uninstall.cmake.in"
         "${CMAKE_BINARY_DIR}/uninstall.cmake"

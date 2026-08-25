@@ -9,6 +9,7 @@ RUN apt-get update \
 WORKDIR /src
 
 COPY CMakeLists.txt README.md ./
+COPY cmake ./cmake
 COPY sources ./sources
 COPY include ./include
 COPY tests ./tests
