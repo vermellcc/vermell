@@ -5,57 +5,78 @@
 #include <cerrno>
 #include <cstring>
 #include <netinet/tcp.h>
+#include <sys/uio.h>
 
 namespace {
 
-    // Decrements the connection counter when a worker is done with a fd, on
-    // every exit path of ServeRequest (including early returns).
-    struct ConnectionGuard {
-        std::atomic<size_t>& counter;
-        explicit ConnectionGuard(std::atomic<size_t>& c) : counter(c) {}
-        ~ConnectionGuard() { counter.fetch_sub(1); }
-    };
+    void send_best_effort(const int fd, const vermell::http::WireResponse& response) {
+        iovec iov[2];
+        iov[0].iov_base = const_cast<char*>(response.head.data());
+        iov[0].iov_len = response.head.size();
+        iov[1].iov_base = const_cast<char*>(response.body.data());
+        iov[1].iov_len = response.body.size();
 
-    // Single-shot, non-blocking write for dispatcher-generated errors: the
-    // event loop must never wait on a stuck client, so the response is sent
-    // once and dropped on EAGAIN (the connection is closed right after).
-    void send_best_effort(const int fd, const std::string& msg) {
-        (void)::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+        msghdr msg{};
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 2;
+        const ssize_t written = ::sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+        (void)written;
     }
 
-    // Minimal JSON error response (same shape the worker paths produce).
-    std::string error_response(const int code, const char* error) {
-        return vermell::http::Response{}
-                   .status(code)
-                   .type("application/json")
-                   .body(std::string(R"lit({"error":")lit") + error + R"lit("})lit")
-                   .str();
+    vermell::http::WireResponse error_response(const int code, const char* error) {
+        vermell::http::Response response;
+        response.status(code).type("application/json").set("Connection", "close");
+        response.body(std::string(R"lit({"error":")lit") + error + R"lit("})lit");
+
+        vermell::http::WireResponse out;
+        out.head = response.head();
+        out.body = response.take_body();
+        return out;
+    }
+
+    bool keep_alive_requested(const vermell::http::Message& message) {
+        const std::string_view conn = message.header("Connection");
+        if (vermell::http::detail::iequals(conn, "close"))
+            return false;
+        if (vermell::http::detail::iequals(conn, "keep-alive"))
+            return true;
+        return !message.version.starts_with("HTTP/1.0");
     }
 
 } // namespace
 
-RequestIO::RequestIO(const shared_ptr<vector<epoll_event> > &events,
+RequestIO::RequestIO(const shared_ptr<vector<epoll_event>> &evs,
                      const std::shared_ptr<RoutesMap> &routes,
-                     int &filed,
-                     int &epoll_fd,
+                     int &listener_fd,
+                     int &epfd,
                      const shared_ptr<Server> &con,
                      const vermell::Config &config,
-                     const std::vector<vermell::StaticMount>& static_mounts) : events(events),
-                                                   routes(routes),
-                                                   file_descriptor(std::make_unique<int>(filed)),
-                                                   epoll_fd(std::make_unique<int>(epoll_fd)),
-                                                   connection(con),
-                                                   config_(std::make_shared<const vermell::Config>(config)),
-                                                   static_mounts_(static_mounts) {
+                     const std::vector<vermell::StaticMount>& static_mounts,
+                     const bool allow_keep_alive,
+                     const shared_ptr<threading::ThreadPool>& pool)
+    : events(evs),
+      routes(routes),
+      file_descriptor(std::make_unique<int>(listener_fd)),
+      epoll_fd(std::make_unique<int>(epfd)),
+      connection(con),
+      config_(std::make_shared<const vermell::Config>(config)),
+      static_mounts_(static_mounts),
+      allow_keep_alive_(allow_keep_alive) {
 
-    thread_pool_ = make_shared<threading::ThreadPool>(threads_, config_snapshot()->max_queue_size);
+    thread_pool_ = pool;
+
+    notify_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = notify_fd_;
+    epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, notify_fd_, &ev);
 }
 
 
 void RequestIO::Dispatch(const int notice) const {
 
     if (notice <= 0) {
-        SweepStale(); // idle wake-up: reap connections that ran out of time
+        SweepStale();
         return;
     }
 
@@ -64,15 +85,17 @@ void RequestIO::Dispatch(const int notice) const {
         const int event_fd = events->operator[](i).data.fd;
         const uint32_t event_mask = events->operator[](i).events;
 
+        if (event_fd == notify_fd_) {
+            DrainCompletions();
+            continue;
+        }
+
         if (event_fd == *file_descriptor) {
             AcceptPending();
             continue;
         }
 
         if (event_mask & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-            // The peer closed or the fd errored. If readable data is still
-            // pending, drain it first (a client may half-close after sending
-            // a complete request); anything still incomplete is dropped.
             if (event_mask & EPOLLIN)
                 HandleReadable(event_fd);
             if (has_pending(event_fd)) {
@@ -111,9 +134,6 @@ void RequestIO::AcceptPending() const {
             return;
         }
 
-        // Shedding: when the connection cap is reached, accept and close
-        // immediately so the listen backlog drains (the client sees a reset)
-        // instead of spinning the event loop with an undrained readable fd.
         const auto cfg = config_snapshot();
         if (cfg->max_connections != 0
             && active_connections_.load() >= cfg->max_connections) {
@@ -126,14 +146,12 @@ void RequestIO::AcceptPending() const {
             continue;
         }
 
-        // Disable Nagle: with delayed ACK a tiny response can otherwise sit
-        // in the socket for up to 40 ms. Best-effort; never fatal.
         int nodelay = 1;
         (void)::setsockopt(client_file_descriptor, IPPROTO_TCP, TCP_NODELAY,
                            &nodelay, static_cast<socklen_t>(sizeof(nodelay)));
 
         epoll_event client_event{};
-        client_event.events = EPOLLIN; // level triggered; kept registered while reading
+        client_event.events = EPOLLIN;
         client_event.data.fd = client_file_descriptor;
 
         if (epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, client_file_descriptor, &client_event) == VER_NVALUE) {
@@ -144,8 +162,6 @@ void RequestIO::AcceptPending() const {
 
         active_connections_.fetch_add(1);
 
-        // Track the connection from birth: the deadlines below apply even to
-        // clients that connect and never send a byte.
         const auto now = std::chrono::steady_clock::now();
         auto& st = pending_slot(client_file_descriptor);
         st.start = now;
@@ -163,11 +179,6 @@ void RequestIO::HandleReadable(const int fd) const {
     if (st.start == std::chrono::steady_clock::time_point{})
         st.start = now;
 
-    // ---- drain everything the socket has right now (non-blocking) ----
-    // Reused scratch buffer: one allocation for the lifetime of the server
-    // instead of a per-event heap allocation + zero-fill. Capped at 1 MiB
-    // (configure() already clamps read_chunk, but a hand-built Config handed
-    // straight to ApplyConfig must not trigger a giant allocation here).
     const size_t want = std::min<size_t>(cfg->read_chunk > 0 ? cfg->read_chunk : 16384,
                                          1UL << 20);
     if (read_scratch_.size() < want)
@@ -184,22 +195,21 @@ void RequestIO::HandleReadable(const int fd) const {
                 Reject(fd, 413, "payload too large");
                 return;
             }
-            continue; // keep draining until the socket reports EAGAIN
+            continue;
         }
         if (bytes == 0) {
-            peer_closed = true; // FIN: no more bytes will ever come
+            peer_closed = true;
             break;
         }
         if (errno == EINTR)
             continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK)
-            break; // drained: wait for the next EPOLLIN
+            break;
         Reject(fd, 400, "malformed request");
         return;
     }
 
     if (st.buffer.empty()) {
-        // No data at all; the deadlines in SweepStale will reap the client.
         return;
     }
 
@@ -207,63 +217,90 @@ void RequestIO::HandleReadable(const int fd) const {
         (cfg->request_timeout.count() > 0 && now - st.start > cfg->request_timeout) ||
         (cfg->read_timeout.count() > 0 && now - st.last_activity > cfg->read_timeout);
 
-    // ---- head known: only wait for the promised body bytes ----
-    if (st.head_known) {
-        if (st.buffer.size() >= st.expected) {
-            epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr); // worker owns the fd now
-            std::string raw = std::move(st.buffer);
+    while (!st.buffer.empty()) {
+        size_t request_len = 0;
+
+        if (st.head_known) {
+            if (st.buffer.size() < st.expected) {
+                if (peer_closed) {
+                    Reject(fd, 400, "malformed request");
+                    return;
+                }
+                if (deadline_over) {
+                    Reject(fd, 408, "request timeout");
+                    return;
+                }
+                return;
+            }
+            request_len = st.expected;
+        } else {
+            const auto inspection = vermell::http::Message::inspect(st.buffer);
+            switch (inspection.framing) {
+                case vermell::http::Message::Framing::Incomplete: {
+                    if (inspection.expected > cfg->max_request_size) {
+                        Reject(fd, 413, "payload too large");
+                        return;
+                    }
+                    st.expected = inspection.expected;
+                    st.head_known = inspection.expected > 0;
+                    if (peer_closed) {
+                        Reject(fd, 400, "malformed request");
+                        return;
+                    }
+                    if (deadline_over) {
+                        Reject(fd, 408, "request timeout");
+                        return;
+                    }
+                    return;
+                }
+                case vermell::http::Message::Framing::Complete:
+                    request_len = inspection.expected;
+                    break;
+                case vermell::http::Message::Framing::BadRequest:
+                    Reject(fd, 400, "malformed request");
+                    return;
+                case vermell::http::Message::Framing::TooManyHeaders:
+                    Reject(fd, 431, "too many headers");
+                    return;
+                case vermell::http::Message::Framing::NotImplemented:
+                    Reject(fd, 501, "transfer encoding not supported");
+                    return;
+            }
+        }
+
+        std::string raw;
+        if (st.buffer.size() == request_len) {
+            raw = std::move(st.buffer);
+        } else {
+            raw.assign(st.buffer.data(), request_len);
+            st.buffer.erase(0, request_len);
+        }
+        st.expected = 0;
+        st.head_known = false;
+
+        if (!thread_pool_) {
+            if (!serve_inline(fd, std::move(raw))) {
+                epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                close(fd);
+                drop_pending(fd);
+                active_connections_.fetch_sub(1);
+                return;
+            }
+            continue;
+        }
+
+        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        if (!st.buffer.empty())
+            st.dispatching = true;
+        else
             drop_pending(fd);
-            DispatchTask(fd, std::move(raw));
-            return;
-        }
-        if (peer_closed) { // promised bytes never arrived
-            Reject(fd, 400, "malformed request");
-            return;
-        }
-        if (deadline_over) {
-            Reject(fd, 408, "request timeout");
-            return;
-        }
-        return; // body still on the wire: stay registered in epoll
+        DispatchTask(fd, std::move(raw));
+        return;
     }
 
-    // ---- head phase: ask the parser for the framing verdict ----
-    const auto inspection = vermell::http::Message::inspect(st.buffer);
-    switch (inspection.framing) {
-        case vermell::http::Message::Framing::Incomplete: {
-            if (inspection.expected > cfg->max_request_size) {
-                Reject(fd, 413, "payload too large");
-                return;
-            }
-            st.expected = inspection.expected;
-            st.head_known = inspection.expected > 0;
-            if (peer_closed) {
-                Reject(fd, 400, "malformed request");
-                return;
-            }
-            if (deadline_over) {
-                Reject(fd, 408, "request timeout");
-                return;
-            }
-            return; // keep reading
-        }
-        case vermell::http::Message::Framing::Complete: {
-            epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr); // worker owns the fd now
-            std::string raw = std::move(st.buffer);
-            drop_pending(fd);
-            DispatchTask(fd, std::move(raw));
-            return;
-        }
-        case vermell::http::Message::Framing::BadRequest:
-            Reject(fd, 400, "malformed request");
-            return;
-        case vermell::http::Message::Framing::TooManyHeaders:
-            Reject(fd, 431, "too many headers");
-            return;
-        case vermell::http::Message::Framing::NotImplemented:
-            Reject(fd, 501, "transfer encoding not supported");
-            return;
-    }
+    const auto finish = std::chrono::steady_clock::now();
+    st.start = finish;
+    st.last_activity = finish;
 }
 
 
@@ -271,16 +308,16 @@ void RequestIO::SweepStale() const {
 
     const auto cfg = config_snapshot();
     if (cfg->request_timeout.count() <= 0 && cfg->read_timeout.count() <= 0)
-        return; // deadlines disabled
+        return;
 
     const auto now = std::chrono::steady_clock::now();
-    // Slot map iteration: contiguous vector, indices are the fds. reset()
-    // (not erase) keeps the vector stable while iterating.
     for (size_t i = 0; i < pending_.size(); ++i) {
         auto& slot = pending_[i];
         if (!slot.has_value())
             continue;
         const ConnState& st = *slot;
+        if (st.dispatching)
+            continue;
         const bool total_over = cfg->request_timeout.count() > 0
                                 && now - st.start > cfg->request_timeout;
         const bool idle_over = cfg->read_timeout.count() > 0
@@ -311,9 +348,8 @@ void RequestIO::DispatchTask(const int fd, std::string raw) const {
     }
 
     if (accepted)
-        return; // the worker owns the fd and closes it after responding
+        return;
 
-    // Queue full: shed instead of blocking the event loop (backpressure).
     send_best_effort(fd, error_response(503, "server busy"));
     close(fd);
     active_connections_.fetch_sub(1);
@@ -333,49 +369,130 @@ void RequestIO::Reject(const int fd, const int code, const char* error) const {
 
 void RequestIO::ServeRequest(const int fd, std::string raw) const {
 
-    // This fd was accepted (counted) and now belongs exclusively to this
-    // worker; the guard releases the count on every exit path.
-    ConnectionGuard guard(active_connections_);
-
-    // Stack request context: no per-request heap allocation. The worker
-    // closes the fd (ExecuteRoute) before this object goes out of scope, and
-    // Server's destructor never closes sockets on its own.
     Server base;
-
     base.setPort(connection->getPort());
     base.setSocketId(fd);
     base.setWriteTimeout(config_snapshot()->write_timeout);
     base.setResponse(std::move(raw));
 
-    ExecuteRoute(base, routes);
-    handled_.fetch_add(1); // ServeRequest never returns early: always handled
+    const bool keep_alive = ExecuteRoute(base, routes);
+    handled_.fetch_add(1);
+    complete_connection(fd, keep_alive);
 }
 
 
-void RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &routes) const {
-    string send_target = vermell::http::Response{}
-                             .status(404)
-                             .type("application/json")
-                             .body(R"lit({"error":"this route is not defined"})lit")
-                             .str();
+bool RequestIO::serve_inline(const int fd, std::string raw) const {
 
+    Server base;
+    base.setPort(connection->getPort());
+    base.setSocketId(fd);
+    base.setWriteTimeout(config_snapshot()->write_timeout);
+    base.setResponse(std::move(raw));
+
+    const bool keep_alive = ExecuteRoute(base, routes);
+    handled_.fetch_add(1);
+    return keep_alive;
+}
+
+
+void RequestIO::DrainCompletions() const {
+    uint64_t counter;
+    while (::read(notify_fd_, &counter, sizeof counter) > 0) {}
+
+    std::vector<Completion> done;
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        done.swap(completed_);
+    }
+    for (const Completion& c : done) {
+        if (c.keep_alive)
+            RearmConnection(c.fd);
+        else {
+            close(c.fd);
+            drop_pending(c.fd);
+            active_connections_.fetch_sub(1);
+        }
+    }
+}
+
+
+void RequestIO::RearmConnection(const int fd) const {
+    auto& st = pending_slot(fd);
+    const auto now = std::chrono::steady_clock::now();
+    st.start = now;
+    st.last_activity = now;
+    st.expected = 0;
+    st.head_known = false;
+    st.dispatching = false;
+
+    epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = fd;
+    epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+
+    if (!st.buffer.empty())
+        HandleReadable(fd);
+}
+
+
+void RequestIO::complete_connection(const int fd, const bool keep_alive) const {
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        completed_.push_back({fd, keep_alive});
+    }
+    const uint64_t one = 1;
+    const ssize_t written = ::write(notify_fd_, &one, sizeof one);
+    (void)written;
+}
+
+
+void RequestIO::shutdown() const {
+    if (thread_pool_)
+        thread_pool_->kill();
+
+    std::vector<Completion> done;
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        done.swap(completed_);
+    }
+    for (const Completion& c : done) {
+        close(c.fd);
+        drop_pending(c.fd);
+        active_connections_.fetch_sub(1);
+    }
+
+    for (size_t i = 0; i < pending_.size(); ++i) {
+        if (!pending_[i].has_value())
+            continue;
+        const int fd = static_cast<int>(i);
+        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        close(fd);
+        active_connections_.fetch_sub(1);
+    }
+    pending_.clear();
+}
+
+
+bool RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &routes) const {
     bool head_only = false;
+    bool keep_alive = false;
+    bool parsed = false;
+    bool responded = false;
+    vermell::http::WireResponse send_target;
 
     try {
         const string socket_response = instance.getResponse();
 
         if (const auto message = vermell::http::Message::parse(socket_response)) {
-
+            parsed = true;
             head_only = (message->method == "HEAD");
+            keep_alive = keep_alive_requested(*message);
 
-            // Route lookup without a per-request key allocation: build
-            // "path\x1fmethod" in a small inline buffer and find() it via
-            // the map's transparent hashing (see RouteMapHash/RouteMapEq).
             const std::string_view path_view = message->path;
             const std::string_view method_view = message->method;
             const size_t key_len = path_view.size() + 1 + method_view.size();
-            std::array<char, 64> key_buf;          // not zero-initialized: we write key_len bytes
-            std::string key_heap;                  // fallback for long paths
+            std::array<char, 64> key_buf;
+            std::string key_heap;
             char* const key = key_len <= key_buf.size()
                                   ? key_buf.data()
                                   : (key_heap.resize(key_len), key_heap.data());
@@ -384,7 +501,6 @@ void RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
             std::memcpy(key + path_view.size() + 1, method_view.data(), method_view.size());
 
             if (const auto itr = routes->find(std::string_view(key, key_len)); itr != routes->end()) {
-
                 bool guarded;
                 {
                     std::lock_guard<std::mutex> lock(itr->second->route_mutex);
@@ -395,7 +511,9 @@ void RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
                                           : utility_t::guard_route(itr->second->time_key);
                 }
 
-                if (!guarded) {
+                if (guarded) {
+                    responded = true;
+                } else {
                     std::unique_ptr<string> guard_msg;
                     auto [data, time_key] = itr->second->middlewares.execute(*message, guard_msg, config_snapshot()->render);
 
@@ -406,13 +524,9 @@ void RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
                         itr->second->guardRouteMsg = std::move(guard_msg);
                     }
                     send_target = std::move(data);
+                    responded = true;
                 }
             }
-            // No exact route matched: fall through to the mounted static
-            // directories (router.staticX). Explicit routes always take
-            // precedence; static mounts answer GET/HEAD only and the MOST
-            // SPECIFIC mount wins (a "/assets" mount beats a root "/" mount
-            // for "/assets/..."), ties resolved by registration order.
             else if (!static_mounts_.empty()) {
                 const vermell::StaticMount* best = nullptr;
                 size_t best_len = 0;
@@ -425,36 +539,41 @@ void RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
                 if (best != nullptr) {
                     if (auto served = best->serve(message->path, message->method,
                                                   message->header("If-None-Match"));
-                        served.has_value())
+                        served.has_value()) {
                         send_target = std::move(*served);
+                        responded = true;
+                    }
                 }
             }
-        } else {
-            // The bytes were readable but are not an HTTP request: that is
-            // a 400, never a 404 (the route table is not the problem).
-            send_target = vermell::http::Response{}
-                              .status(400)
-                              .type("application/json")
-                              .body(R"lit({"error":"malformed request"})lit")
-                              .str();
         }
     } catch (const std::exception &e) {
         terminal("REQUEST PROCESSING ERROR: ", e.what());
     }
 
-    // HEAD returns the exact headers a GET would produce (Content-Length
-    // included) but never a body (RFC 9110 §9.3.2).
-    if (head_only) {
-        const size_t sep = send_target.find("\r\n\r\n");
-        if (sep != string::npos)
-            send_target.resize(sep + 4);
+    if (!responded) {
+        vermell::http::Response response;
+        response.status(parsed ? 404 : 400).type("application/json");
+        response.body(parsed ? R"lit({"error":"this route is not defined"})lit"
+                             : R"lit({"error":"malformed request"})lit");
+        send_target.head = response.head();
+        send_target.body = response.take_body();
     }
 
-    instance.sendResponse(send_target);
+    if (head_only)
+        send_target.body.clear();
 
-    // The worker owns the fd: this is the single close point of the connection.
-    if (close(instance.getDescription()) < enums::neo::eReturn::OK && errno != EBADF)
-        terminal(VER_SOCKET_CLOSE, strerror(errno));
+    if (!allow_keep_alive_)
+        keep_alive = false;
+    if (send_target.head.find("Connection: close") != string::npos)
+        keep_alive = false;
+    if (!keep_alive) {
+        const size_t pos = send_target.head.find("Connection: keep-alive");
+        if (pos != string::npos)
+            send_target.head.replace(pos + 12, 10, "close");
+    }
+
+    instance.sendResponse(send_target.head, send_target.body);
+    return keep_alive;
 }
 
 
@@ -471,21 +590,12 @@ bool RequestIO::TimeGuard(const RoutesMap::const_iterator &itr) {
 }
 
 
-void RequestIO::SetThreads(size_t size) {
-    thread_pool_ = make_shared<threading::ThreadPool>(size, config_snapshot()->max_queue_size);
+void RequestIO::set_pool(const shared_ptr<threading::ThreadPool>& pool) {
+    thread_pool_ = pool;
 }
 
 
 void RequestIO::ApplyConfig(const vermell::Config& config) {
-    const auto current = config_snapshot();
-    if (current && config.threads != current->threads) {
-        if (config.threads == 0) {
-            const unsigned int cores = std::thread::hardware_concurrency();
-            SetThreads(cores == 0 ? 8 : cores);
-        } else {
-            SetThreads(config.threads);
-        }
-    }
     {
         std::unique_lock lock(config_mutex_);
         config_ = std::make_shared<const vermell::Config>(config);

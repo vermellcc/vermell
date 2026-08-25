@@ -4,9 +4,10 @@
 #include <memory>
 #include <optional>
 #include <shared_mutex>
+#include <mutex>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <netinet/in.h>
-#include <unordered_map>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -23,18 +24,7 @@
 #include "../threading/thread_pool.h"
 
 using std::make_shared, std::vector, std::unique_ptr;
-// RoutesMap is defined in routes.hpp (transparent hashing for
-// allocation-free lookups).
-/*
- *  RequestIO for Server socket class, if you want implement other Server, you should create other RequestIO for the implementation
- *
- *  Reading model: the event-loop thread owns every connection until its
- *  request is complete. Bytes are drained non-blocking into a per-connection
- *  buffer, so a slow client occupies only an epoll fd (bounded by
- *  Config::max_connections and the request deadlines) instead of pinning a
- *  worker thread — the slowloris cure. Only complete requests are handed to
- *  the thread pool for route execution.
- */
+
 class RequestIO {
 
     public:
@@ -46,18 +36,9 @@ class RequestIO {
     unique_ptr<int> epoll_fd;
     shared_ptr<Server> connection;
 
-    // Live server configuration. router.configure() applies to a running
-    // server (timeouts, limits...) without a restart. Note that
-    // std::atomic<std::shared_ptr<T>> is ILL-FORMED: atomic<T> requires T to
-    // be trivially copyable and shared_ptr is not (GCC/libstdc++ rejects it
-    // with a static_assert — "is_trivially_copyable<...shared_ptr...>").
-    // The snapshot is therefore guarded by a shared_mutex: readers (workers
-    // and the event loop) take a shared lock and copy the shared_ptr to an
-    // immutable Config; ApplyConfig() takes a unique lock to swap it.
     mutable std::shared_mutex config_mutex_;
     std::shared_ptr<const vermell::Config> config_;
 
-    // Thread-safe copy of the live configuration snapshot.
     [[nodiscard]] std::shared_ptr<const vermell::Config> config_snapshot() const {
         std::shared_lock lock(config_mutex_);
         return config_;
@@ -65,88 +46,62 @@ class RequestIO {
 
     shared_ptr<threading::ThreadPool> thread_pool_;
 
-    // Static directory mounts (router.staticX). Snapshot taken at
-    // construction: mounts must be registered before listen(), exactly like
-    // routes. Only read by workers through ExecuteRoute.
     std::vector<vermell::StaticMount> static_mounts_;
+    bool allow_keep_alive_ = true;
 
-    // Open client connections (incremented on accept, decremented on close).
-    // Enforced against Config::max_connections to bound connection-flood DoS.
     mutable std::atomic<size_t> active_connections_{0};
-    // Fully handled client connections (any outcome). listenOne() waits on
-    // this so it can stop after serving a single request without racing the
-    // epoll batches.
     mutable std::atomic<size_t> handled_{0};
 
-    // Read state of every connection that has not produced a complete
-    // request yet. Only the event-loop thread reads/writes this table, so no
-    // locking is needed.
     struct ConnState {
-        std::string buffer;                                     // bytes received so far
-        std::chrono::steady_clock::time_point start{};          // accept time
-        std::chrono::steady_clock::time_point last_activity{};  // last recv
-        size_t expected = 0;     // total request size once the head is known
-        bool head_known = false; // the head was validated by Message::inspect
+        std::string buffer;
+        std::chrono::steady_clock::time_point start{};
+        std::chrono::steady_clock::time_point last_activity{};
+        size_t expected = 0;
+        bool head_known = false;
+        bool dispatching = false;
     };
 
-    // Connection slot map: a flat vector indexed by fd. The kernel hands out
-    // the lowest free fd, so fd numbers stay dense and bounded by the
-    // concurrent connection count (itself bounded by max_connections /
-    // RLIMIT_NOFILE) — a lookup is one cache line instead of a hash-table
-    // node chase, and the entries are contiguous for SweepStale(). An empty
-    // optional = no connection on that fd.
+    struct Completion {
+        int fd;
+        bool keep_alive;
+    };
+
     mutable std::vector<std::optional<ConnState>> pending_;
 
-    // Reused recv scratch buffer (event-loop thread only): avoids a
-    // heap allocation + zero-fill per readable event.
     mutable std::vector<char> read_scratch_;
 
-    // ---- fd slot-map helpers (event-loop thread only) ----
+    mutable int notify_fd_ = -1;
+    mutable std::mutex completed_mutex_;
+    mutable std::vector<Completion> completed_;
 
     [[nodiscard]] bool has_pending(const int fd) const noexcept {
         return fd >= 0 && static_cast<size_t>(fd) < pending_.size()
             && pending_[static_cast<size_t>(fd)].has_value();
     }
-    // Get-or-create the slot for a freshly accepted fd (kernel fds are
-    // always >= 0; callers pass accepted/event-loop fds only).
     ConnState& pending_slot(const int fd) const {
         const size_t u = static_cast<size_t>(fd);
         if (u >= pending_.size())
-            pending_.resize(u + 1); // value-initializes empty optionals
+            pending_.resize(u + 1);
         auto& slot = pending_[u];
         if (!slot.has_value())
             slot.emplace();
         return *slot;
     }
-    // Drops the connection state (frees its buffer). Safe to call for an
-    // unknown fd; a later accept that reuses the fd gets a fresh slot.
     void drop_pending(const int fd) const noexcept {
         if (fd >= 0 && static_cast<size_t>(fd) < pending_.size())
             pending_[static_cast<size_t>(fd)].reset();
     }
 
-    size_t threads_{[this] {
-        const auto cfg = config_snapshot();
-        if (cfg && cfg->threads != 0)
-            return cfg->threads;
-        const unsigned int cores = std::thread::hardware_concurrency();
-        return static_cast<size_t>(cores == 0 ? 8 : cores);
-    }()};
-
-    // Accepts every pending connection (the listen socket is nonblocking).
     void AcceptPending() const;
-    // Drains a readable client fd (event-loop thread); dispatches the request
-    // to the pool when complete, rejects or keeps waiting otherwise.
     void HandleReadable(int fd) const;
-    // Reaps connections that exceeded the inactivity or total read deadline.
     void SweepStale() const;
-    // Hands a complete raw request to the pool; sheds the connection (503)
-    // instead of blocking the event loop when the queue is full.
     void DispatchTask(int fd, std::string raw) const;
-    // Dispatcher-side connection teardown with a best-effort error response.
     void Reject(int fd, int code, const char* error) const;
-    // Worker entry point: owns fd exclusively (already removed from epoll).
     void ServeRequest(int fd, std::string raw) const;
+    bool serve_inline(int fd, std::string raw) const;
+    void DrainCompletions() const;
+    void RearmConnection(int fd) const;
+    void complete_connection(int fd, bool keep_alive) const;
 
     public:
 
@@ -156,20 +111,19 @@ class RequestIO {
                int &,
                const shared_ptr<Server>&,
                const vermell::Config &config = {},
-               const std::vector<vermell::StaticMount>& static_mounts = {});
-
+               const std::vector<vermell::StaticMount>& static_mounts = {},
+               bool allow_keep_alive = true,
+               const shared_ptr<threading::ThreadPool>& pool = nullptr);
 
     void Dispatch(int notice) const;
-    void SetThreads(size_t size);
-    // Replaces the live configuration; re-sizes the pool when threads changed.
     void ApplyConfig(const vermell::Config& config);
+    void set_pool(const shared_ptr<threading::ThreadPool>& pool);
+    void shutdown() const;
 
-    // Number of client connections that have been fully handled (any
-    // outcome). Used by listenOne() to stop after one served request.
     [[nodiscard]] size_t handled_connections() const noexcept { return handled_.load(); }
 
     static bool TimeGuard(const RoutesMap::const_iterator & itr);
-    void ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &routes) const;
+    bool ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &routes) const;
 };
 
 #endif //IO_H

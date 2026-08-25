@@ -82,9 +82,9 @@ namespace vermell {
         // when the path is not under the mount (or the method is not
         // GET/HEAD) so the caller can try the next mount or answer 404.
         // `if_none_match` is the raw "If-None-Match" request header value.
-        [[nodiscard]] std::optional<std::string> serve(const std::string_view request_path,
-                                                        const std::string_view method,
-                                                        const std::string_view if_none_match = {}) const;
+        [[nodiscard]] std::optional<http::WireResponse> serve(const std::string_view request_path,
+                                                               const std::string_view method,
+                                                               const std::string_view if_none_match = {}) const;
 
         // True when `request_path` (raw, percent-encoded) falls under this
         // mount. Callers use it to pick the most specific mount first.
@@ -109,15 +109,14 @@ namespace vermell {
         // Reads and answers one resolved file. `spa_fallback` allows the
         // index fallback on NotFound (disabled for the fallback itself, so
         // a missing index.html is a plain 404, never a loop).
-        [[nodiscard]] std::optional<std::string> serve_path(const std::string& full,
-                                                             const std::string_view if_none_match,
-                                                             const bool spa_fallback) const;
-        [[nodiscard]] std::optional<std::string> serve_index(const std::string_view if_none_match) const;
-        // Serializes a full HTTP/1.1 response (Content-Length auto-added).
-        [[nodiscard]] static std::string respond(const int status, std::string body,
-                                                  const std::string_view mime,
-                                                  const std::string_view cache_control = {},
-                                                  const std::string_view etag = {});
+        [[nodiscard]] std::optional<http::WireResponse> serve_path(const std::string& full,
+                                                                   const std::string_view if_none_match,
+                                                                   const bool spa_fallback) const;
+        [[nodiscard]] std::optional<http::WireResponse> serve_index(const std::string_view if_none_match) const;
+        [[nodiscard]] static http::WireResponse respond(const int status, std::string body,
+                                                         const std::string_view mime,
+                                                         const std::string_view cache_control = {},
+                                                         const std::string_view etag = {});
     };
 
     // ------------------------------------------------------------------ //
@@ -196,20 +195,24 @@ namespace vermell {
         return "public, max-age=" + std::to_string(options_.max_age.count());
     }
 
-    inline std::string StaticMount::respond(const int status, std::string body,
-                                            const std::string_view mime,
-                                            const std::string_view cache_control,
-                                            const std::string_view etag) {
+    inline http::WireResponse StaticMount::respond(const int status, std::string body,
+                                                   const std::string_view mime,
+                                                   const std::string_view cache_control,
+                                                   const std::string_view etag) {
         vermell::http::Response response;
         response.status(status).type(mime).body(std::move(body));
         if (!cache_control.empty())
             response.set("Cache-Control", cache_control);
         if (!etag.empty())
             response.set("ETag", etag);
-        return response.str();
+
+        http::WireResponse out;
+        out.head = response.head();
+        out.body = response.take_body();
+        return out;
     }
 
-    inline std::optional<std::string> StaticMount::serve_path(
+    inline std::optional<http::WireResponse> StaticMount::serve_path(
         const std::string& full, const std::string_view if_none_match,
         const bool spa_fallback) const {
 
@@ -243,7 +246,7 @@ namespace vermell {
         return respond(200, std::move(read.data), vermell::mime::of(full), cache_control);
     }
 
-    inline std::optional<std::string> StaticMount::serve_index(
+    inline std::optional<http::WireResponse> StaticMount::serve_index(
         const std::string_view if_none_match) const {
 
         std::string full = dir_.empty() ? "." : dir_;
@@ -259,7 +262,7 @@ namespace vermell {
         return serve_path(full, if_none_match, false);
     }
 
-    inline std::optional<std::string> StaticMount::serve(
+    inline std::optional<http::WireResponse> StaticMount::serve(
         const std::string_view request_path, const std::string_view method,
         const std::string_view if_none_match) const {
 

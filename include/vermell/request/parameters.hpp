@@ -98,19 +98,23 @@ struct utility_t {
     //
     // Every header is forwarded to Response::set, which strips CR/LF, so a
     // tainted value can never split the response (header injection).
-    [[nodiscard]] static string prepare(string body,
-                                        const std::string_view type,
-                                        const std::string_view headers,
-                                        const int status = 200) {
+    [[nodiscard]] static vermell::http::WireResponse prepare(string body,
+                                                             const std::string_view type,
+                                                             const std::string_view headers,
+                                                             const int status = 200) {
         vermell::http::Response response;
         response.status(status).type(type);
         apply_headers(response, headers);
         response.body(std::move(body));
-        return response.str();
+
+        vermell::http::WireResponse out;
+        out.head = response.head();
+        out.body = response.take_body();
+        return out;
     }
 
-    [[maybe_unused]] static string guard_route(const std::chrono::duration<double>::rep seconds,
-                                               string msg = "") {
+    [[maybe_unused]] static vermell::http::WireResponse guard_route(
+        const std::chrono::duration<double>::rep seconds, string msg = "") {
 
         string body = R"lit({"message":")lit"
             + string(not msg.empty()

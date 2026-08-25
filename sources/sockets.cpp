@@ -1,6 +1,7 @@
 #include <memory>
 #include <poll.h>
 #include <cerrno>
+#include <sys/uio.h>
 
 #include "../include/vermell/sockets.h"
 
@@ -210,38 +211,57 @@ void Server::setResponse(string &&data) {
      }
 }
 
-void Server::sendResponse(const string& _msg) const {
-     if (socket_id < 0 || _msg.empty())
+void Server::sendResponse(const string& head, const string& body) const {
+     if (socket_id < 0)
           return;
 
      const int fd = socket_id;
-     size_t sent_total = 0;
+     const char* bufs[2] = { head.data(), body.data() };
+     size_t lens[2] = { head.size(), body.size() };
+     size_t done = 0;
+     const size_t total = lens[0] + lens[1];
 
-     // The fd is owned exclusively by the calling worker (it was removed from
-     // epoll before dispatch), so we write directly: no shared epoll_wait and
-     // MSG_NOSIGNAL to avoid SIGPIPE killing the process when the peer is gone.
-     while (sent_total < _msg.size()) {
+     while (done < total) {
+          iovec iov[2];
+          int count = 0;
+          for (int i = 0; i < 2; ++i) {
+               if (lens[i] == 0)
+                    continue;
+               iov[count].iov_base = const_cast<char*>(bufs[i]);
+               iov[count].iov_len = lens[i];
+               ++count;
+          }
 
-          const ssize_t bytes_send = send(fd, _msg.data() + sent_total, _msg.size() - sent_total, MSG_NOSIGNAL);
+          msghdr msg{};
+          msg.msg_iov = iov;
+          msg.msg_iovlen = static_cast<size_t>(count);
 
+          const ssize_t bytes_send = sendmsg(fd, &msg, MSG_NOSIGNAL);
           if (bytes_send > 0) {
-               sent_total += static_cast<size_t>(bytes_send);
+               done += static_cast<size_t>(bytes_send);
+               size_t consumed = static_cast<size_t>(bytes_send);
+               for (int i = 0; i < 2 && consumed > 0; ++i) {
+                    const size_t take = std::min(consumed, lens[i]);
+                    lens[i] -= take;
+                    bufs[i] += take;
+                    consumed -= take;
+               }
                continue;
           }
 
           if (bytes_send == -1 && errno == EINTR)
                continue;
 
-           if (bytes_send == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                pollfd pfd{};
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
+          if (bytes_send == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+               pollfd pfd{};
+               pfd.fd = fd;
+               pfd.events = POLLOUT;
 
-                if (poll(&pfd, 1, write_timeout_ms) > 0 && (pfd.revents & POLLOUT))
-                     continue;
-           }
+               if (poll(&pfd, 1, write_timeout_ms) > 0 && (pfd.revents & POLLOUT))
+                    continue;
+          }
 
-          break; // real error or timeout: give up, the caller closes the fd
+          break;
      }
 }
 

@@ -588,7 +588,8 @@ TEST(SecureRenderUnit, ResponseHeaderInjectionStripped) {
 TEST(SecureRenderUnit, GuardRouteEscapesJsonMessage) {
      // A custom guard message with quotes/control chars must not break out
      // of the {"message":"..."} JSON envelope.
-     const string wire = utility_t::guard_route(5, "wait\"; injected:\"yes");
+     const vermell::http::WireResponse w = utility_t::guard_route(5, "wait\"; injected:\"yes");
+     const string wire = w.head + w.body;
      EXPECT_EQ(wire.find("injected:\"yes"), string::npos);
      EXPECT_NE(wire.find("wait\\\"; injected:\\\"yes"), string::npos);
 }

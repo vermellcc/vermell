@@ -1,16 +1,12 @@
-//
-// Fluent HTTP/1.1 response builder: proper CRLF framing, reason phrases
-// and automatic Content-Length. Replaces the legacy string-concatenation
-// style of hand-written HTTP responses.
-//
-
 #ifndef VERMELL_HTTP_RESPONSE_HPP
 #define VERMELL_HTTP_RESPONSE_HPP
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -29,9 +25,6 @@ namespace vermell::http {
             return set("Content-Type", mime);
         }
 
-        // Adds or replaces (case-insensitive) a header. CR/LF and other
-        // control characters are stripped from both name and value so a
-        // tainted string can never split the response into extra headers.
         Response& set(const std::string_view name, const std::string_view value) {
             const std::string safe_name  = sanitize(name);
             const std::string safe_value = sanitize(value);
@@ -54,6 +47,7 @@ namespace vermell::http {
 
         [[nodiscard]] int status() const noexcept { return code_; }
         [[nodiscard]] const std::string& body() const noexcept { return body_; }
+        std::string take_body() { return std::move(body_); }
 
         [[nodiscard]] bool has(const std::string_view name) const noexcept {
             return std::any_of(headers_.begin(), headers_.end(), [&](const auto& h) {
@@ -61,20 +55,18 @@ namespace vermell::http {
             });
         }
 
-        // Serializes the response with correct CRLF framing.
-        [[nodiscard]] std::string str() const {
+        [[nodiscard]] std::string head() const {
             std::string out;
-            out.reserve(128 + body_.size());
+            out.reserve(128);
 
             out += "HTTP/1.1 ";
-            out += std::to_string(code_);
+            append_number(out, code_);
             out += ' ';
             out += reason(code_);
             out += "\r\n";
 
             if (!has("Server"))
                 out += "Server: Vermell\r\n";
-
             if (!has("Content-Type"))
                 out += "Content-Type: text/plain\r\n";
 
@@ -87,28 +79,27 @@ namespace vermell::http {
 
             if (!has("Content-Length")) {
                 out += "Content-Length: ";
-                out += std::to_string(body_.size());
+                append_number(out, body_.size());
                 out += "\r\n";
             }
 
             if (!has("Accept-Ranges"))
                 out += "Accept-Ranges: bytes\r\n";
-
-            // Browsers must not sniff the MIME type of the body: a served
-            // user-controlled file can otherwise be interpreted as HTML and
-            // become stored XSS. Always safe to send.
             if (!has("X-Content-Type-Options"))
                 out += "X-Content-Type-Options: nosniff\r\n";
-
             if (!has("Connection"))
-                out += "Connection: close\r\n";
+                out += "Connection: keep-alive\r\n";
 
             out += "\r\n";
+            return out;
+        }
+
+        [[nodiscard]] std::string str() const {
+            std::string out = head();
             out += body_;
             return out;
         }
 
-        // RFC 7231 reason phrases ("OK" fallback mirrors the legacy behavior).
         [[nodiscard]] static std::string_view reason(const int code) noexcept {
             switch (code) {
                 case 100: return "Continue";
@@ -159,26 +150,41 @@ namespace vermell::http {
             return a.size() == b.size()
                 && std::equal(a.begin(), a.end(), b.begin(), [](const char x, const char y) {
                        return std::tolower(static_cast<unsigned char>(x))
-                           == std::tolower(static_cast<unsigned char>(y));
+                            == std::tolower(static_cast<unsigned char>(y));
                    });
         }
 
-        // Truncates at the first CR/LF or C0 control character (HTTP
-        // response splitting): everything from there on is discarded.
         static std::string sanitize(const std::string_view in) {
+            const auto dirty = [](const unsigned char c) { return c < 0x20 || c == 0x7f; };
+            if (std::none_of(in.begin(), in.end(), [&](const char c) { return dirty(static_cast<unsigned char>(c)); }))
+                return std::string(in);
+
             std::string out;
             out.reserve(in.size());
             for (const char c : in) {
-                if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f)
+                if (dirty(static_cast<unsigned char>(c)))
                     break;
                 out.push_back(c);
             }
             return out;
         }
 
+        template <class T>
+        static void append_number(std::string& out, const T value) {
+            char buf[24];
+            const auto [ptr, ec] = std::to_chars(buf, buf + sizeof buf, value);
+            if (ec == std::errc{})
+                out.append(buf, ptr - buf);
+        }
+
         int code_ = 200;
         std::vector<std::pair<std::string, std::string>> headers_;
         std::string body_;
+    };
+
+    struct WireResponse {
+        std::string head;
+        std::string body;
     };
 
 } // namespace vermell::http

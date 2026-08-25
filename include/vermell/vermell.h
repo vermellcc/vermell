@@ -87,6 +87,7 @@ public:
     Vermell& setMaxRequestSize(size_t bytes) noexcept;
     Vermell& setReadChunkSize(size_t bytes) noexcept;
     Vermell& setThreads(size_t threads) noexcept;
+    Vermell& setAcceptThreads(size_t accept_threads) noexcept;
     Vermell& setMaxEvents(int max_events) noexcept;
     Vermell& setMaxQueueSize(size_t max_queue_size) noexcept;
     Vermell& setMaxConnections(size_t max_connections) noexcept;
@@ -250,6 +251,8 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
         config_.max_events = MAX_EVENTS;
     if (config_.threads > MAX_THREADS)
         config_.threads = MAX_THREADS;
+    if (config_.accept_threads > MAX_THREADS)
+        config_.accept_threads = MAX_THREADS;
     if (config_.backlog <= 0 || config_.backlog > MAX_SESSIONS)
         config_.backlog = MAX_SESSIONS;
 
@@ -313,6 +316,12 @@ Vermell<T>& Vermell<T>::setReadChunkSize(const size_t bytes) noexcept {
 template <class T>
 Vermell<T>& Vermell<T>::setThreads(const size_t threads) noexcept {
     config_.threads = threads > 256 ? 256 : threads;
+    return *this;
+}
+
+template <class T>
+Vermell<T>& Vermell<T>::setAcceptThreads(const size_t accept_threads) noexcept {
+    config_.accept_threads = accept_threads > 256 ? 256 : accept_threads;
     return *this;
 }
 

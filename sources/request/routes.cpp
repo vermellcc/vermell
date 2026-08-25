@@ -1,7 +1,7 @@
 #include "../../include/vermell/routes.hpp"
 
 
-string  Query::getData() const noexcept                   {     return last;     }
+vermell::http::WireResponse Query::takeData() noexcept    {     return std::move(last);     }
 bool    Query::getNext() const noexcept                   {     return next_enable;   }
 void    Query::next()    noexcept                         {     next_enable = true;   }
 void    Query::lock()    noexcept                         {     next_enable = false;  }

@@ -83,9 +83,8 @@ class Query {
     bool next_enable  { false};
     long time_key    {0};
 
-    string response {"default"},
-           last,
-           headers, guardMsg{};
+    string response {"default"}, headers, guardMsg{};
+    vermell::http::WireResponse last;
 
     public:
     Query()  = default;
@@ -100,7 +99,7 @@ class Query {
 
     void setRenderSecurity(const vermell::RenderSecurity& sec) noexcept { render_sec = sec; }
 
-    [[nodiscard]] string  getData()    const noexcept;
+    [[nodiscard]] vermell::http::WireResponse takeData() noexcept;
     [[nodiscard]] bool    getNext()    const noexcept;
 
     [[maybe_unused]] void    next()       noexcept;
@@ -147,35 +146,28 @@ struct Core_init_t  {
 
     [[nodiscard]] [[maybe_unused]] inline size_t size() const noexcept { return functions.size(); }
 
-     std::pair<string, std::chrono::duration<double>::rep> execute(const vermell::http::Message &message,
-                                                                    std::unique_ptr<string> &guard_msg,
-                                                                    const vermell::RenderSecurity& render_sec = {}) {
-        // A fresh Query per request: execute() can run concurrently on several
-        // worker threads for the same route, so no state may live in members.
-        auto remote_control = std::make_unique<Query>();
-        remote_control->setRenderSecurity(render_sec);
+     std::pair<vermell::http::WireResponse, std::chrono::duration<double>::rep>
+     execute(const vermell::http::Message &message,
+             std::unique_ptr<string> &guard_msg,
+             const vermell::RenderSecurity& render_sec = {}) {
+        Query remote_control;
+        remote_control.setRenderSecurity(render_sec);
+        remote_control.body.consume(message);
 
-        string response{};
-
-        remote_control->body.consume(message);
-
-        // middlewares execution
         for (size_t i = 0; i < functions.size(); i++) {
-            remote_control->lock();
-
-            functions[i](*remote_control);
-            if(remote_control->getNext())
+            remote_control.lock();
+            functions[i](remote_control);
+            if (remote_control.getNext())
                 continue;
-            else
-                break;
+            break;
         }
 
-        response += remote_control->getData();
-        long time_key = remote_control->getTimeKey();
-        if(time_key > 0)
-            guard_msg = std::make_unique<string>(remote_control->getGuardMsg());
+        vermell::http::WireResponse response = remote_control.takeData();
+        long time_key = remote_control.getTimeKey();
+        if (time_key > 0)
+            guard_msg = std::make_unique<string>(remote_control.getGuardMsg());
 
-        return {response, time_key};
+        return {std::move(response), time_key};
     }
 };
 

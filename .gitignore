@@ -1,5 +1,6 @@
 # Archivos y directorios generados por CMake
 build/
+build-release/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake

@@ -47,7 +47,13 @@ namespace vermell {
         size_t read_chunk = 16UL * 1024UL;
 
         // ---- concurrency / epoll ----
-        size_t threads = 0; // worker threads; 0 = auto (hardware_concurrency)
+        // Worker pool size. 0 = thread-per-core: each accept thread serves its
+        // own requests inline (no queue). >0 = offload to a pool of N workers.
+        size_t threads = 0;
+        // Accept/event-loop threads. 1 = single loop (default, SO_REUSEPORT
+        // off). 0 = auto (hardware_concurrency) or >1 runs that many loops,
+        // each with its own SO_REUSEPORT listener for multi-core accept.
+        size_t accept_threads = 1;
         int max_events = 1024;                       // epoll event batch size
         // Queued tasks before the dispatcher sheds load. 0 = auto:
         // max(1024, threads * 256), enough to absorb an epoll batch burst.

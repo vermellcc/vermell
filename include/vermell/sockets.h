@@ -140,7 +140,7 @@ class Server final : public Engine {
                                         static_cast<long long>(std::numeric_limits<int>::max()));
      }
      inline void setReusePort(const bool enable) noexcept { reuse_port_ = enable; }
-     void sendResponse(const string&) const;
+     void sendResponse(const string& head, const string& body) const;
      void setResponse(const std::array<char, DEF_BUFFER_SIZE> &buffer);
      void setResponse(const string &data);
      // Move overload: the request body is handed to the worker by value, so
