@@ -14,7 +14,7 @@ Every server listens on `http://localhost:8080` unless it says otherwise.
 | Example | Shows |
 | --- | --- |
 | [hello-world](hello-world/main.cpp) | Minimal `GET` route with `web.send()`. |
-| [configuration](configuration/main.cpp) | Full `router.configure({...})` reference: network, request reading, thread pool / epoll, render hardening, the readFileX toolchain (`render.cpp`), and the chainable setters. |
+| [configuration](configuration/main.cpp) | Full `router.configure({...})` reference: network, request reading, thread pool / epoll, render hardening and the chainable setters. |
 | [types-routes](types-routes/main.cpp) | One route per HTTP method (`get`, `post`, `put`, `deleteX`, `patch`, `head`, `options`, `link`, `unlink`, `purge`). |
 | [parameters-methods](parameters-methods/main.cpp) | Query/form parameters: `exist`, `get`, `operator[]`, typed `as<T>()` conversion, `value_or` fallbacks. |
 | [request-body](request-body/main.cpp) | Raw JSON/text/binary bodies: `body.raw()`, `body.contentType()`, `body.hasBody()`. |
@@ -23,7 +23,7 @@ Every server listens on `http://localhost:8080` unless it says otherwise.
 | [callbacks](callbacks/main.cpp) | Post-response callbacks and per-response status codes. |
 | [headers](headers/main.cpp) | Reading request headers and setting response headers (`HEADERS`, `setHeaders`). |
 | [simple-json](simple-json/main.cpp) | Building and parsing JSON with the `vermell::Json` DOM (native types, escaping, strict parser); legacy `JSON_s` facade. |
-| [files](files/main.cpp) | Serving files: `readFile` with explicit type, `file()` with auto-detected MIME, `readFileX` C++ templates. |
+| [files](files/main.cpp) | Serving files: `readFile` with explicit type and `file()` with auto-detected MIME. |
 | [static](static/main.cpp) | Static directory mounts with `router.staticX()`: serve a Vue/React/Angular `dist` folder (SPA fallback, cache headers, ETag/304) plus a classic prefix mount. |
 | [file-template](file-template/main.cpp) | `compose()`: HTML pages assembled from modules (`#[name];`). |
 | [data-template](data-template/main.cpp) | `render()`: HTML templates with `[[variable]]` substitution. |

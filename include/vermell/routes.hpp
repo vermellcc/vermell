@@ -20,7 +20,6 @@
 #include "util/mime_types.hpp"
 
 #include "util/basic_render.h"
-#include "util/cpp_reader.h"
 #include "util/ver_reader.h"
 #include "util/data_render.h"
 #include "util/json.hpp"
@@ -121,9 +120,6 @@ class Query {
     // Serves a file detecting the Content-Type from its extension.
     [[maybe_unused]] void    readFile(const string&, const std::function<void()>& callback=[]()->void{}) noexcept;
     [[maybe_unused]] void    file(const string&, const std::function<void()>& callback=[]()->void{}) noexcept;
-    [[maybe_unused]] void    readFileX(const string&,const string&, const std::function<void()>& callback=[]()->void{}) noexcept;
-    // Detects Content-Type from the template's final extension.
-    [[maybe_unused]] void    readFileX(const string&, const std::function<void()>& callback=[]()->void{}) noexcept;
     [[maybe_unused]] void    compose(const string&,int, const std::function<void()>& callback=[]()->void{}) noexcept;
     [[maybe_unused]] void    render(const string&, const std::function<dataRender(dataRender&)>& callback=[](dataRender&)->dataRender{ return dataRender(nullptr); }) noexcept;
 

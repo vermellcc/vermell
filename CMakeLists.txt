@@ -36,44 +36,15 @@ if (TESTING)
             vermell
     )
 
-    include(FetchContent)
-
-
-    find_package(GTest  QUIET)
-
-    if (NOT GTest_FOUND)
-
-        message(STATUS "extracting https://github.com/google/googletest.git")
-        FetchContent_Declare(
-                googletest
-                GIT_REPOSITORY https://github.com/google/googletest.git
-                GIT_TAG v1.15.2
-        )
-        FetchContent_MakeAvailable(googletest)
-        message(STATUS "using -> build/ [gtest]")
-    else ()
-        message(STATUS "#### using local GTest: In case of error verify your installation")
-    endif ()
+    find_package(GTest REQUIRED)
+    message(STATUS "using local GTest: in case of error verify your installation")
 
     target_link_libraries(main GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(main)
 
-
-    find_package(CURL QUIET)
-    if ( NOT CURL_FOUND )
-
-        message( STATUS "extracting https://github.com/curl/curl.git")
-        FetchContent_Declare(
-                curl
-                GIT_REPOSITORY https://github.com/curl/curl.git
-                GIT_TAG 83bedbd
-        )
-        FetchContent_MakeAvailable(curl)
-        message(STATUS "using -> build/ [curl]")
-    else ()
-        message(STATUS "#### using local curl: In case of error with .so.4 verify your installation curl --version")
-    endif ()
+    find_package(CURL REQUIRED)
+    message(STATUS "using local curl: in case of error with .so.4 verify with `curl --version`")
 
     target_link_libraries(main CURL::libcurl)
 

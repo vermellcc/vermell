@@ -71,7 +71,7 @@ namespace vermell {
         bool reuse_port = false;
         std::chrono::milliseconds epoll_timeout{1000}; // listen loop wake-up period
 
-        // ---- file rendering hardening (readFile / readFileX / compose / render) ----
+        // ---- file rendering hardening (readFile / compose / render) ----
         RenderSecurity render{};
     };
 

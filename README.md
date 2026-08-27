@@ -21,7 +21,7 @@ Under the hood it is an event-driven engine: a non-blocking **epoll** loop reads
 - **Any Linux with g++** — x86_64, ARM (aarch64, armv7), Android via Termux, WSL, Raspberry Pi, containers.
 - **Hardened by default** — timeouts, request caps, connection limits and a render jail are on out of the box.
 - **In-tree JSON DOM** — strict RFC 8259 parser and serializer, typed parameters, raw bodies, multipart uploads.
-- **C++ templates** — `compose()` modules, `render()` variables and `readFileX` embedded C++ (sandboxed).
+- **C++ templates** — `compose()` modules and `render()` variables.
 - **Fluent configuration** — one `configure({...})` call or chainable setters, readable at runtime.
 
 > 📚 **Full documentation:** [vermell.cc](https://vermell.cc) — bilingual (EN/ES) manual covering every section of this README with examples and diagrams.
@@ -38,7 +38,7 @@ Under the hood it is an event-driven engine: a non-blocking **epoll** loop reads
 5. [Server Configuration](#server-configuration)
 6. [MIME Types & File Rendering](#mime-types--file-rendering)
 7. [Static Directories](#static-directories)
-8. [Templates: compose, render & readFileX](#templates-compose-render--readfilex)
+8. [Templates: compose & render](#templates-compose--render)
 9. [Render Security](#render-security)
 10. [Process & Environment](#process--environment)
 11. [Examples](#examples)
@@ -291,13 +291,12 @@ Vermell detects the `Content-Type` from the final extension of a file. This mean
 
 ```cpp
 web.readFile("public/data.json");       // application/json
-web.readFileX("public/page.html");      // text/html
 web.file("public/assets/app.js");       // application/javascript
 
 web.send("{}", vermell::mime::json);     // reusable common MIME constants
 ```
 
-An explicit type passed to `readFile` or `readFileX` always takes precedence. The registry includes common text, data, document, image, audio, video, font, archive and executable formats.
+An explicit type passed to `readFile` always takes precedence. The registry includes common text, data, document, image, audio, video, font, archive and executable formats.
 
 ## Static Directories
 
@@ -322,7 +321,7 @@ router.staticX("/assets", "./public/assets");
 
 Full options live in `vermell::StaticOptions` (`include/vermell/util/static_files.h`). A complete example — SPA dist + classic mount + a JSON API side by side — is in [`examples/static`](examples/static/main.cpp).
 
-## Templates: compose, render & readFileX
+## Templates: compose & render
 
 **`compose()`** assembles an HTML page from modules referenced as `#[name];` inside the template. A page that (transitively) includes itself answers 413 instead of exhausting memory:
 
@@ -346,38 +345,15 @@ router.get("/", { [](Query &web) {
 }});
 ```
 
-**`readFileX`** compiles and runs embedded C++ on the server. A template may hold **any number** of `$ ... $` blocks. Each block runs at its position in the page and whatever it writes to `std::cout` is spliced right there; the markup in between is served byte-exact:
-
-```html
-<body>
-    $
-        for (int i = 0; i < 10; i++) {
-            std::cout << "<button> soy un boton, numero: " << i << "</button>";
-        }
-    $
-
-    <p>static markup, served byte-exact</p>
-</body>
-```
-
-Blocks share a single `main()`, so variables declared in an earlier block are visible in later ones. A `$` without a closing partner is treated as literal text (a price like `$5` never breaks the page). The generated program embeds the static markup as fully escaped string literals, so template text cannot inject code into the compilation.
-
-> **Security:** `readFileX` compiles and runs embedded C++, so it is **disabled by default**. Enable it with `router.configure({ .render = { .allow_readfilex = true } })` only when the template content is trusted (see [Render Security](#render-security)).
-
 ## Render Security
 
-The file-rendering methods (`readFile`, `file`, `readFileX`, `compose`, `render`) are hardened through `Config::render`:
+The file-rendering methods (`readFile`, `file`, `compose`, `render`) are hardened through `Config::render`:
 
 ```cpp
 router.configure({
     .render = {
         .root             = "public/", // jail: no path escapes this directory
         .max_file_bytes   = 32UL * 1024 * 1024,
-        .allow_readfilex  = true,      // C++ templates ($ ... $); OFF by default
-        .compile_timeout  = std::chrono::milliseconds{15000},
-        .run_timeout      = std::chrono::milliseconds{5000},
-        .run_memory_bytes = 256UL * 1024 * 1024,
-        .max_output_bytes = 8UL * 1024 * 1024,
     },
 });
 ```
@@ -385,34 +361,6 @@ router.configure({
 - All readers serve **regular files only** (no FIFOs/devices, symlinks are rejected via `O_NOFOLLOW`), cap the size in memory, and never leak internal errors to the client.
 - **The jail is ON even without `.root`:** an empty `render.root` falls back to the working directory, so a server that never configured a root can still not serve files from outside its launch directory (no more open-by-default Local File Inclusion). Set `.root` to a dedicated `public/` directory in production.
 - `compose()` module names (`#[name];`) are restricted to bare file names, so `#[../../etc/passwd];` is rejected, and the composed page is capped at `max_file_bytes` per pass — a module that (transitively) includes itself answers 413 instead of exhausting memory.
-- **`readFileX` is OFF by default.** When enabled, execution is sandboxed: a **seccomp filter denies networking and privileged/escape syscalls for the whole template process tree** (no exfiltration, no scanning, no C2), plus best-effort user/network namespace isolation; private `mkdtemp` workspace (0700/0711), scrubbed environment, no inherited file descriptors, rlimits (CPU/memory/output/processes/file-descriptors), wall-clock timeouts enforced with `SIGKILL`, and — when the server runs as root — the template is executed as the `nobody` user. An unprivileged server keeps its own user's file permissions: treat template files as trusted code either way. Compiled binaries are cached (SHA-256 of the source) under a private per-user directory, so steady-state requests skip `g++`.
-
-### readFileX toolchain
-
-How the embedded C++ of a `readFileX` template is compiled is fully configurable through `Config::render::cpp`:
-
-```cpp
-router.configure({
-    .render = {
-        .cpp = {
-            .compiler = "g++-12",       // absolute path or bare name; "" = auto-detect
-            .standard = "c++20",        // passed as -std=<standard>
-            .optimize = "-O2",          // "" = no optimization flag
-            .hardening         = true,  // stack protector, _FORTIFY_SOURCE, strip
-            .suppress_warnings  = true,  // -w
-            .flags    = {"-I", "templates/includes", "-lm"}, // appended last
-            .memory_bytes    = 2UL * 1024 * 1024 * 1024, // compiler RLIMIT_AS
-            .file_size_bytes = 128UL * 1024 * 1024,        // compiler RLIMIT_FSIZE
-        },
-    },
-});
-
-// or with the fluent setter:
-router.setCppToolchain({ .standard = "c++20" });
-```
-
-The toolchain is part of the binary cache key: rebuilding the same template with different flags never serves a stale binary.
-
 ## Process & Environment
 
 Node.js-style runtime information and configuration, available just by including `vermell/vermell.h`.

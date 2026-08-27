@@ -16,11 +16,7 @@
  TEST_F(TestSuite, TestBaseOne) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8031);
      router.get("/", {[&](Query &http) {
                http.send(expected_default);
        }});
@@ -29,7 +25,8 @@
           router.listenOne();
      )
 
-     const string res = http->get();
+     Veridic client("http://localhost:8031");
+     const string res = client.get();
      isolate_method.get();
 
      EXPECT_EQ(expected_default, res);
@@ -40,11 +37,7 @@
   TEST_F(TestSuite, TestBasePost) {
 
       Router router;
-      router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+      router.setPort(8032);
 
       ISOLATE(
            router.post("/", {[&](Query &http) {
@@ -53,7 +46,8 @@
            router.listenOne();
       )
 
-      const string res = http->post();
+      Veridic client("http://localhost:8032");
+      const string res = client.post();
       isolate_method.get();
 
       EXPECT_EQ(res, res);
@@ -65,14 +59,10 @@
  TEST_F(TestSuite, TestCompose) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8033);
      // The test binary runs from the build dir: jail to the repo root so the
      // "../examples/..." fixtures stay inside the jail.
-     router.configure({ .reuse_port = true, .render = { .root = ".." } });
+     router.configure({ .render = { .root = ".." } });
      const string file = "../examples/file-template/index.html";
 
      ISOLATE(
@@ -83,7 +73,8 @@
             router.listenOne();
      )
 
-     const string res = http->get();
+     Veridic client("http://localhost:8033");
+     const string res = client.get();
      isolate_method.get();
 
      EXPECT_GT(res.length(), neosys::process::readFile(file).length());
@@ -94,13 +85,9 @@
 TEST_F(TestSuite, TestReadFile) {
 
     Router router;
-    router.setPort(8080);
-    // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-    // connection from landing on a still-shutting-down neighbor. Real
-    // deployments should leave reuse_port OFF (Config::reuse_port).
-    router.setReusePort(true);
+    router.setPort(8034);
     // Jail to the repo root: the fixture lives in ../examples.
-    router.configure({ .reuse_port = true, .render = { .root = ".." } });
+    router.configure({ .render = { .root = ".." } });
     const string file = "../examples/files/test.json";
 
     ISOLATE(
@@ -110,56 +97,17 @@ TEST_F(TestSuite, TestReadFile) {
            router.listenOne();
     )
 
-     const string response = http->get();
+     Veridic client("http://localhost:8034");
+     const string response = client.get();
     isolate_method.get();
 
     EXPECT_EQ(response, neosys::process::readFile(file));
 }
 
-
- TEST_F(TestSuite, TestCppRender) {
-
-     Router router;
-     const string file = "../examples/files/cpp.html";
-
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
-     router.configure({ .reuse_port = true, .render = { .root = "..", .allow_readfilex = true } });
-     router.get("/", {[&](Query &http) {
-                http.readFileX(file, "application/html");
-           }});
-
-     ISOLATE(
-
-            router.listenOne();
-     )
-
-     string res = http->get();
-     isolate_method.get();
-
-     const std::regex pattern("\\[(.*?)\\]");
-
-     if(std::smatch matches;
-        std::regex_search(res, matches, pattern))
-        res = matches[1].str() ;
-
-
-     EXPECT_EQ(res, "hello from c++");
- }
-
-
-
  TEST_F(TestSuite, TestHeaders) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8035);
      const string file = "../examples/files/cpp.html";
 
      router.get("/", {[&](Query &http) {
@@ -182,7 +130,8 @@ TEST_F(TestSuite, TestReadFile) {
       "header-1: valueX"
      };
 
-     const string res = http->get(my_headers);
+     Veridic client("http://localhost:8035");
+     const string res = client.get(my_headers);
      isolate_method.get();
 
      EXPECT_TRUE(res == "valueX");
@@ -192,11 +141,7 @@ TEST_F(TestSuite, TestReadFile) {
  TEST_F(TestSuite, TestMiddleware) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8036);
 
      router.post("/", {
 
@@ -212,7 +157,8 @@ TEST_F(TestSuite, TestReadFile) {
           router.listenOne();
      )
 
-     const string res = http->post();
+     Veridic client("http://localhost:8036");
+     const string res = client.post();
      isolate_method.get();
      EXPECT_TRUE(expected_default == res);
  }
@@ -222,11 +168,7 @@ TEST_F(TestSuite, TestReadFile) {
 TEST_F(TestSuite, TestParametersQuery) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8037);
 
      router.get("/",{[&](Query &web) {
 
@@ -245,7 +187,8 @@ TEST_F(TestSuite, TestParametersQuery) {
        router.listenOne();
      )
 
-     const string res = http->get("/?id=2");
+     Veridic client("http://localhost:8037");
+     const string res = client.get("/?id=2");
      isolate_method.get();
 
      EXPECT_EQ(res, "success");
@@ -257,11 +200,7 @@ TEST_F(TestSuite, TestParametersQuery) {
 TEST_F(TestSuite, TestParametersPost) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8038);
 
      router.post("/",{[&](Query &web) {
 
@@ -284,7 +223,8 @@ TEST_F(TestSuite, TestParametersPost) {
         "id=2"
      };
 
-     const string res = http->post(fields,"/");
+     Veridic client("http://localhost:8038");
+     const string res = client.post(fields,"/");
      neosys::process::writeFile("./kevin.res.txt", res);
      isolate_method.get();
 
@@ -295,11 +235,7 @@ TEST_F(TestSuite, TestParametersPost) {
 TEST_F(TestSuite, TestQueryDecoding) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8039);
 
      router.get("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -309,7 +245,8 @@ TEST_F(TestSuite, TestQueryDecoding) {
        router.listenOne();
      )
 
-     const string res = http->get("/?name=hello%20world+vermell");
+     Veridic client("http://localhost:8039");
+     const string res = client.get("/?name=hello%20world+vermell");
      isolate_method.get();
 
      EXPECT_EQ(res, "hello world vermell");
@@ -319,11 +256,7 @@ TEST_F(TestSuite, TestQueryDecoding) {
 TEST_F(TestSuite, TestTypedParameter) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8040);
 
      router.get("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -333,7 +266,8 @@ TEST_F(TestSuite, TestTypedParameter) {
        router.listenOne();
      )
 
-     const string res = http->get("/?id=21");
+     Veridic client("http://localhost:8040");
+     const string res = client.get("/?id=21");
      isolate_method.get();
 
      EXPECT_EQ(res, "42");
@@ -343,11 +277,7 @@ TEST_F(TestSuite, TestTypedParameter) {
 TEST_F(TestSuite, TestJsonBody) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8041);
 
      router.post("/",{[&](Query &web) {
        const string legacy_data = web.body.getParameters().get("data").value;
@@ -361,7 +291,8 @@ TEST_F(TestSuite, TestJsonBody) {
      POST fields = { json_body };
      VHeaders hdrs = { "Content-Type: application/json" };
 
-     const string res = http->post(fields, hdrs, "/");
+     Veridic client("http://localhost:8041");
+     const string res = client.post(fields, hdrs, "/");
      isolate_method.get();
 
      EXPECT_EQ(res, json_body + "|" + json_body + "|application/json");
@@ -371,11 +302,7 @@ TEST_F(TestSuite, TestJsonBody) {
 TEST_F(TestSuite, TestMultipartForm) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8042);
 
      router.post("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -402,7 +329,8 @@ TEST_F(TestSuite, TestMultipartForm) {
      POST fields = { multipart_body };
      VHeaders hdrs = { "Content-Type: multipart/form-data; boundary=----vermellTestBoundary" };
 
-     const string res = http->post(fields, hdrs, "/");
+     Veridic client("http://localhost:8042");
+     const string res = client.post(fields, hdrs, "/");
      isolate_method.get();
 
      EXPECT_EQ(res, "hello vermell|note.txt|FILE-CONTENT-123");
@@ -476,17 +404,12 @@ TEST(ThreadPoolBackpressureTest, BlocksWhenQueueIsFullWithoutDroppingWork) {
 TEST_F(TestSuite, TestConfigPayloadTooLarge) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8043);
 
      // Any complete HTTP request is bigger than this: reject with 413.
      router.configure({
          .read_timeout     = std::chrono::seconds{2},
          .max_request_size = 16,
-         .reuse_port       = true,
      });
 
      router.get("/", {[&](Query &http) {
@@ -497,7 +420,8 @@ TEST_F(TestSuite, TestConfigPayloadTooLarge) {
           router.listenOne();
      )
 
-     const string res = http->get();
+     Veridic client("http://localhost:8043");
+     const string res = client.get();
      isolate_method.get();
 
      EXPECT_EQ(res, R"lit({"error":"payload too large"})lit");
@@ -507,11 +431,7 @@ TEST_F(TestSuite, TestConfigPayloadTooLarge) {
 TEST_F(TestSuite, TestConfigureKeepsFlow) {
 
      Router router;
-     router.setPort(8080);
-     // The suite shares port 8080 between tests: SO_REUSEPORT keeps a fresh
-     // connection from landing on a still-shutting-down neighbor. Real
-     // deployments should leave reuse_port OFF (Config::reuse_port).
-     router.setReusePort(true);
+     router.setPort(8044);
 
      router.configure({
          .read_timeout     = std::chrono::seconds{10},
@@ -521,7 +441,6 @@ TEST_F(TestSuite, TestConfigureKeepsFlow) {
          .threads          = 2,
          .max_events       = 256,
          .max_queue_size   = 64,
-         .reuse_port       = true,
      });
 
      router.get("/", {[&](Query &http) {
@@ -532,11 +451,12 @@ TEST_F(TestSuite, TestConfigureKeepsFlow) {
           router.listenOne();
      )
 
-     const string res = http->get();
+     Veridic client("http://localhost:8044");
+     const string res = client.get();
      isolate_method.get();
 
      EXPECT_EQ(expected_default, res);
-     EXPECT_EQ(router.config().port, 8080);
+     EXPECT_EQ(router.config().port, 8044);
      EXPECT_EQ(router.config().threads, 2UL);
      EXPECT_EQ(router.config().max_queue_size, 64UL);
      EXPECT_EQ(router.config().max_request_size, 8UL * 1024UL * 1024UL);
@@ -546,13 +466,6 @@ TEST_F(TestSuite, TestConfigureKeepsFlow) {
 // ---------------------------------------------------------------------------
 // Render hardening
 // ---------------------------------------------------------------------------
-
-TEST(SecureRenderUnit, Sha256KnownVector) {
-     EXPECT_EQ(vermell::srender::sha256_hex("abc"),
-               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-     EXPECT_EQ(vermell::srender::sha256_hex(""),
-               "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-}
 
 TEST(SecureRenderUnit, IncludeNameWhitelist) {
      EXPECT_TRUE(vermell::srender::valid_include_name("one.html"));
@@ -623,29 +536,6 @@ TEST(SecureRenderUnit, BasicReadJailBlocksEscape) {
      EXPECT_EQ(data.find("root:"), string::npos);
 }
 
-TEST(SecureRenderUnit, CppReaderWithoutCodeBlockIsVerbatim) {
-     // Legacy behavior was undefined (uninitialized coordinates): a template
-     // without '$' must now be served untouched.
-     const string file = "./sec_notags.html";
-     { std::ofstream out(file); out << "<p>plain</p>"; }
-
-     auto [data, status] = CppReader::processing(file);
-     EXPECT_EQ(status, "200");
-     EXPECT_EQ(data, "<p>plain</p>");
-     std::filesystem::remove(file);
-}
-
-TEST(SecureRenderUnit, CppReaderEmptyFileDoesNotCrash) {
-     // Legacy scanned raw_html.length() - 1 == SIZE_MAX positions.
-     const string file = "./sec_empty.html";
-     { std::ofstream out(file); }
-
-     auto [data, status] = CppReader::processing(file);
-     EXPECT_EQ(status, "200");
-     EXPECT_TRUE(data.empty());
-     std::filesystem::remove(file);
-}
-
 TEST(SecureRenderUnit, ComposeRejectsTraversalModule) {
      const string file = "./sec_trav.html";
      { std::ofstream out(file); out << "A#[../../../etc/passwd];B"; }
@@ -680,252 +570,6 @@ TEST(SecureRenderUnit, DataRenderWithoutMarkersIsUnchanged) {
      EXPECT_EQ(renderer.render(file), "<b>static</b>");
      std::filesystem::remove(file);
 }
-
-// The new integration tests below use their own port (and their own
-// client) so they never share a listening socket with the legacy tests:
-// the suite runs every test as a short-lived process on the same port and
-// SO_REUSEPORT can hand a fresh connection to a dying neighbor.
-
-TEST_F(TestSuite, TestReadFileXDisabledByConfig) {
-
-     Router router;
-     router.setPort(8091);
-     router.configure({
-         .render = { .root = "..", .allow_readfilex = false },
-     });
-
-     router.get("/", {[&](Query &http) {
-                http.readFileX("../examples/files/cpp.html", "text/html");
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8091");
-     const string res = client.get();
-     isolate_method.get();
-
-     EXPECT_NE(res.find("disabled"), string::npos);
- }
-
-TEST_F(TestSuite, TestReadFileXKillsInfiniteLoop) {
-
-     const string file = "./sec_loop.html";
-     { std::ofstream out(file); out << "X$ while(true){} $Y"; }
-
-      Router router;
-      router.setPort(8092);
-      router.configure({
-          .render = {
-              .allow_readfilex = true,
-              .run_timeout = std::chrono::milliseconds{500},
-          },
-      });
-
-     router.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8092");
-     const auto start = std::chrono::steady_clock::now();
-     const string res = client.get();
-     isolate_method.get();
-     const auto elapsed = std::chrono::steady_clock::now() - start;
-
-     // The runaway program is SIGKILLed after run_timeout instead of
-     // pinning a worker thread forever.
-     EXPECT_NE(res.find("failed or timed out"), string::npos);
-     EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count(), 30);
-
-     // Second request on a fresh router: the cached binary is reused (no
-     // recompilation) and the worker pool survived the kill.
-      Router router2;
-      router2.setPort(8093);
-      router2.configure({
-          .render = {
-              .allow_readfilex = true,
-              .run_timeout = std::chrono::milliseconds{500},
-          },
-      });
-     router2.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     Veridic client2("http://localhost:8093");
-     const auto start2 = std::chrono::steady_clock::now();
-     std::future<void> second = std::async(std::launch::async, [&] { router2.listenOne(); });
-     const string res2 = client2.get();
-     second.get();
-     const auto elapsed2 = std::chrono::steady_clock::now() - start2;
-
-     EXPECT_NE(res2.find("failed or timed out"), string::npos);
-     EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(elapsed2).count(), 10);
-
-     std::filesystem::remove(file);
- }
-
-TEST_F(TestSuite, TestReadFileXCacheKeepsOutput) {
-
-     const string file = "./sec_cached.html";
-     { std::ofstream out(file); out << "A$ std::cout << \"[cached-ok]\"; $B"; }
-
-      Router router;
-      router.setPort(8094);
-      router.configure({ .render = { .allow_readfilex = true } });
-      router.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-      ISOLATE(
-          router.listenOne();
-      )
-
-      Veridic client("http://localhost:8094");
-      const string res = client.get();
-      isolate_method.get();
-      EXPECT_NE(res.find("cached-ok"), string::npos);
-
-      // Second hit must produce the exact same output from the cached binary.
-      Router router2;
-      router2.setPort(8095);
-      router2.configure({ .render = { .allow_readfilex = true } });
-      router2.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     Veridic client2("http://localhost:8095");
-     std::future<void> second = std::async(std::launch::async, [&] { router2.listenOne(); });
-     const string res2 = client2.get();
-     second.get();
-     EXPECT_EQ(res, res2);
-
-      std::filesystem::remove(file);
-  }
-
-TEST_F(TestSuite, TestReadFileXMultipleBlocks) {
-
-     // Text before, between and after the blocks must survive byte-exact and
-     // each block's stdout must land at its position in the page.
-     const string file = "./sec_multi.html";
-     { std::ofstream out(file); out << "A$ std::cout << \"1\"; $B$\n std::cout << \"2\";\n$C"; }
-
-      Router router;
-      router.setPort(8108);
-      router.configure({ .render = { .allow_readfilex = true } });
-      router.get("/", {[&](Query &http) {
-                http.readFileX(file); // also exercises MIME auto-detection
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8108");
-     const string res = client.get();
-     isolate_method.get();
-
-     EXPECT_EQ(res, "A1B2C");
-
-     std::filesystem::remove(file);
- }
-
-TEST_F(TestSuite, TestReadFileXForLoopAndSecondBlock) {
-
-     // The exact shape from the docs: a loop block, then another block.
-     const string file = "./sec_buttons.html";
-     { std::ofstream out(file); out <<
-         "$\n"
-         "    for (int i = 0; i < 10; i++) {\n"
-         "        std::cout << \"<button> soy un boton, numero: \" << i << \"</button>\";\n"
-         "    }\n"
-         "$\n"
-         "\n"
-         "$\n"
-         "    std::cout << \"<button>test</button>\";\n"
-         "$\n";
-     }
-
-      Router router;
-      router.setPort(8109);
-      router.configure({ .render = { .allow_readfilex = true } });
-      router.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8109");
-     const string res = client.get();
-     isolate_method.get();
-
-     for (int i = 0; i < 10; i++)
-         EXPECT_NE(res.find("<button> soy un boton, numero: " + std::to_string(i) + "</button>"),
-                   string::npos);
-     EXPECT_NE(res.find("<button>test</button>"), string::npos);
-
-     std::filesystem::remove(file);
- }
-
-TEST_F(TestSuite, TestReadFileXDanglingDollarIsVerbatim) {
-
-     // A '$' without a closing partner is literal text, not a broken
-     // template (prices, shell snippets, truncated files).
-     const string file = "./sec_dollar.html";
-     { std::ofstream out(file); out << "<p>price: $5 and \"quotes\" \\ backslash</p>"; }
-
-     Router router;
-     router.setPort(8110);
-     router.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8110");
-     const string res = client.get();
-     isolate_method.get();
-
-     EXPECT_EQ(res, "<p>price: $5 and \"quotes\" \\ backslash</p>");
-
-     std::filesystem::remove(file);
- }
-
-TEST_F(TestSuite, TestReadFileXEscapesMarkupIntoSource) {
-
-     // Markup full of C++-hostile bytes (quotes, backslashes, newlines)
-     // around a live block: the generated translation unit must still
-     // compile and the text must round-trip byte-exact.
-     const string file = "./sec_escape.html";
-     { std::ofstream out(file); out << "<a title=\"x\\y\">\"q\"</a>\n$ std::cout << \"<b>ok</b>\"; $\n<div>\\done\\</div>"; }
-
-      Router router;
-      router.setPort(8111);
-      router.configure({ .render = { .allow_readfilex = true } });
-      router.get("/", {[&](Query &http) {
-                http.readFileX(file, "text/html");
-       }});
-
-     ISOLATE(
-          router.listenOne();
-     )
-
-     Veridic client("http://localhost:8111");
-     const string res = client.get();
-     isolate_method.get();
-
-     EXPECT_EQ(res, "<a title=\"x\\y\">\"q\"</a>\n<b>ok</b>\n<div>\\done\\</div>");
-
-     std::filesystem::remove(file);
- }
 
 TEST_F(TestSuite, TestReadFileJailOverHttp) {
 
@@ -1139,83 +783,6 @@ TEST(JsonUnit, LegacyJsonSIsSafeNow) {
 
       EXPECT_EQ(res, R"({"double":42})");
  }
-
-
-// ---------------------------------------------------------------------------
-// readFileX toolchain (RenderSecurity::cpp)
-// ---------------------------------------------------------------------------
-
-TEST(CppToolchainUnit, StandardIsConfigurable) {
-     // A requires-clause on a lambda is a hard error in C++17 mode.
-     const string file = "./tc_std.html";
-     { std::ofstream out(file); out << "X$ auto f = [](auto x) requires true { return x * 2; }; std::cout << f(21); $Y"; }
-
-      vermell::RenderSecurity sec; // legacy default: c++17
-      sec.allow_readfilex = true;
-      auto [body17, status17] = CppReader::processing(file, sec);
-     EXPECT_EQ(status17, "400");
-
-     sec.cpp.standard = "c++20";
-     auto [body20, status20] = CppReader::processing(file, sec);
-     EXPECT_EQ(status20, "200");
-     EXPECT_EQ(body20, "X42Y");
-
-     std::filesystem::remove(file);
- }
-
-TEST(CppToolchainUnit, ExtraFlagsReachTheCompiler) {
-     const string file = "./tc_flags.html";
-     { std::ofstream out(file); out << "A$ std::cout << ANSWER; $B"; } // ANSWER undefined by default
-
-      vermell::RenderSecurity sec;
-      sec.allow_readfilex = true;
-      sec.cpp.compiler = "g++"; // bare names are resolved in the usual dirs
-     auto [plain, status_plain] = CppReader::processing(file, sec);
-     EXPECT_EQ(status_plain, "400");
-
-     sec.cpp.flags = {"-DANSWER=42"};
-     auto [defined, status_defined] = CppReader::processing(file, sec);
-     EXPECT_EQ(status_defined, "200");
-     EXPECT_EQ(defined, "A42B");
-
-     std::filesystem::remove(file);
- }
-
-TEST(CppToolchainUnit, CacheSeparatesToolchains) {
-     // Same source, different flags: the second build must NOT get the
-     // first toolchain's cached binary.
-     const string file = "./tc_cache.html";
-     { std::ofstream out(file); out << "A$ std::cout << ANSWER; $B"; }
-
-      vermell::RenderSecurity sec;
-      sec.allow_readfilex = true;
-      sec.cpp.flags = {"-DANSWER=1"};
-     auto [one, status_one] = CppReader::processing(file, sec);
-     EXPECT_EQ(status_one, "200");
-     EXPECT_EQ(one, "A1B");
-
-     sec.cpp.flags = {"-DANSWER=2"};
-     auto [two, status_two] = CppReader::processing(file, sec);
-     EXPECT_EQ(status_two, "200");
-     EXPECT_EQ(two, "A2B");
-
-     std::filesystem::remove(file);
- }
-
-TEST(CppToolchainUnit, BadCompilerPathFailsCleanly) {
-     const string file = "./tc_bad.html";
-     { std::ofstream out(file); out << "A$ std::cout << 1; $B"; }
-
-      vermell::RenderSecurity sec;
-      sec.allow_readfilex = true;
-      sec.cpp.compiler = "/no/such/g++";
-     auto [body, status] = CppReader::processing(file, sec);
-     EXPECT_EQ(status, "400");
-     EXPECT_NE(body.find("could not be compiled"), string::npos);
-
-     std::filesystem::remove(file);
- }
-
 
 // ---------------------------------------------------------------------------
 // HTTP parser hardening (vermell::http::Message::inspect / parse)

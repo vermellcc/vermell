@@ -47,17 +47,6 @@ void  Query::file(const string& path, const std::function<void()>& callback) noe
     last = utility_t::prepare(std::move(data), vermell::mime::of(path), headers, utility_t::toInt(status));
     callback();
 }
-void  Query::readFileX(const string& path,const string& type, const std::function<void()>& callback) noexcept {
-    auto [data, status] = CppReader::processing(path, render_sec);
-    last = utility_t::prepare(std::move(data), type, headers, utility_t::toInt(status));
-    callback();
-}
-void  Query::readFileX(const string& path, const std::function<void()>& callback) noexcept {
-    auto [data, status] = CppReader::processing(path, render_sec);
-    last = utility_t::prepare(std::move(data), vermell::mime::of(path), headers, utility_t::toInt(status));
-    callback();
-}
-
 void  Query::compose(const string& path, const int reserve, const std::function<void()>& callback) noexcept {
     auto [data, status] = VerReader::processing(path, reserve, render_sec);
     last = utility_t::prepare(std::move(data), vermell::mime::of(path), headers, utility_t::toInt(status));

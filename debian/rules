@@ -1,8 +1,8 @@
 #!/usr/bin/make -f
 
-# Debian convention: ship a shared library. The TESTING block currently uses
-# FetchContent (googletest/curl), which is not allowed in Debian, so it is
-# disabled here; enable it against system packages later if you add tests.
+# Debian convention: ship a shared library. The TESTING block resolves
+# googletest/curl from the system via find_package, so it is disabled here;
+# enable it against the system packages if you want to build the tests.
 %:
 	dh $@
 

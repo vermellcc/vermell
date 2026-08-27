@@ -97,10 +97,6 @@ public:
     // multi-instance setups (see Config::reuse_port).
     Vermell& setReusePort(bool reuse_port) noexcept;
 
-    // Toolchain used to compile readFileX templates:
-    //   router.setCppToolchain({ .compiler = "g++-12", .standard = "c++20" });
-    Vermell& setCppToolchain(const vermell::CppToolchain& toolchain) noexcept;
-
     int setPort(uint16_t) noexcept;
     [[nodiscard]] [[maybe_unused]] inline uint16_t getPort() const noexcept{
         constexpr auto min_port = static_cast<uint16_t>(neo::MIN_PORT);
@@ -364,12 +360,6 @@ Vermell<T>& Vermell<T>::setReusePort(const bool reuse_port) noexcept {
     config_.reuse_port = reuse_port;
     if (tcpControl != nullptr)
         tcpControl->setReusePort(reuse_port);
-    return *this;
-}
-
-template <class T>
-Vermell<T>& Vermell<T>::setCppToolchain(const vermell::CppToolchain& toolchain) noexcept {
-    config_.render.cpp = toolchain;
     return *this;
 }
 
