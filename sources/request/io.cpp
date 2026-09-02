@@ -164,6 +164,7 @@ void RequestIO::AcceptPending() const {
 
         const auto now = std::chrono::steady_clock::now();
         auto& st = pending_slot(client_file_descriptor);
+        st = ConnState{};
         st.start = now;
         st.last_activity = now;
     }
@@ -352,6 +353,7 @@ void RequestIO::DispatchTask(const int fd, std::string raw) const {
 
     send_best_effort(fd, error_response(503, "server busy"));
     close(fd);
+    drop_pending(fd);
     active_connections_.fetch_sub(1);
     handled_.fetch_add(1);
 }
