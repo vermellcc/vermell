@@ -3,6 +3,12 @@
 
 
 **A minimal, zero-bloat web framework designed for modern C++ environments. Fast, structural, and strictly typed.**
+> **About the Repository Origins & Commit History:**  
+> Vermell is not an auto-generated project. Anyone can verify this by checking the archived repositories directly in the GitHub organization and under the personal account (`scyth3-c`). Work on this codebase began ~4 years ago in a private repo to explore Linux sockets, `epoll`, non-blocking I/O, and HTTP protocol framing from scratch, and was later moved to the organization before being paused due to concurrency and memory safety concerns.  
+> 
+> To revive and release the framework cleanly, an orphan branch was cut to avoid carrying years of messy scratch commits, abandoned experiments, and dirty history into this public repository. Parts of the documentation and test suites were organized with AI tooling, but the core engine and systems architecture were written from the ground up over the years.
+
+
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?style=flat-square&logo=cplusplus&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black)
