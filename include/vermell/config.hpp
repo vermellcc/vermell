@@ -15,7 +15,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <sys/socket.h>
+
+#include "util/portability.h" // SOMAXCONN on every platform
 
 #include "util/enums.h"
 #include "util/render_security.h"

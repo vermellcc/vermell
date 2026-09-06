@@ -10,11 +10,10 @@
 #include <limits>
 #include <vector>
 #include <thread>
-#include <sys/epoll.h>
-#include <unistd.h>
 
 #include "../util/enums.h"
 #include "../util/parameter_proccess.h"
+#include "../net/poller.h"
 
 #include "../config.hpp"
 #include "../routes.hpp"
@@ -79,7 +78,11 @@ namespace workers {
             const size_t accept_count = _listen_type == neo::WHILE
                                             ? resolve_accept_threads(config)
                                             : 1;
-            const bool reuse_port = accept_count > 1 || config.reuse_port;
+            // SO_REUSEPORT (and therefore one listener per accept loop) does
+            // not exist on Windows: there, every loop shares the first
+            // listener and the kernel serializes accept() for them.
+            const bool multi_listener = vermell::net::Poller::reuse_port_supported();
+            const bool reuse_port = multi_listener && (accept_count > 1 || config.reuse_port);
 
             const bool inline_mode = config.threads == 0;
             pool_ = inline_mode ? nullptr : make_shared<threading::ThreadPool>(config.threads, config.max_queue_size);
@@ -92,8 +95,8 @@ namespace workers {
 
             struct Loop {
                 shared_ptr<T> listener;
-                int epfd = -1;
-                shared_ptr<vector<epoll_event>> events;
+                std::unique_ptr<vermell::net::Poller> poller;
+                shared_ptr<vector<vermell::net::Poller::Event>> events;
                 shared_ptr<RequestIO> io;
             };
             std::vector<Loop> loops;
@@ -102,44 +105,44 @@ namespace workers {
             try {
                 for (size_t i = 0; i < accept_count; ++i) {
                     Loop loop;
-                    loop.listener = i == 0 ? connection : make_shared<T>();
-                    loop.listener->setPort(connection->getPort());
-                    loop.listener->setReusePort(reuse_port);
-                    loop.listener->setSessions(config.backlog);
 
-                    if (loop.listener->on() != VER_SOCKET_OK)
-                        throw std::runtime_error(VER_MAIN_THREAD);
+                    if (i == 0 || multi_listener) {
+                        loop.listener = i == 0 ? connection : make_shared<T>();
+                        loop.listener->setPort(connection->getPort());
+                        loop.listener->setReusePort(reuse_port);
+                        loop.listener->setSessions(config.backlog);
 
-                    int listener_fd = loop.listener->getDescription();
-                    if (listener_fd < 0) {
-                        loop.listener->Close();
-                        throw std::runtime_error(VER_MAIN_THREAD);
+                        if (loop.listener->on() != VER_SOCKET_OK)
+                            throw std::runtime_error(VER_MAIN_THREAD);
+
+                        int listener_fd = loop.listener->getDescription();
+                        if (listener_fd < 0) {
+                            loop.listener->Close();
+                            throw std::runtime_error(VER_MAIN_THREAD);
+                        }
+                        if (Server::setNonblocking(listener_fd) == VER_SOCKET_ERROR) {
+                            loop.listener->Close();
+                            throw std::runtime_error(VER_MAIN_THREAD);
+                        }
+                    } else {
+                        // Windows: all accept loops watch the same listener.
+                        loop.listener = loops[0].listener;
                     }
-                    if (Server::setNonblocking(listener_fd) == VER_SOCKET_ERROR) {
-                        loop.listener->Close();
-                        throw std::runtime_error(VER_MAIN_THREAD);
-                    }
 
-                    loop.epfd = epoll_create1(0);
-                    if (loop.epfd == -1) {
-                        loop.listener->Close();
+                    loop.poller = std::make_unique<vermell::net::Poller>();
+                    if (!loop.poller->valid())
                         throw std::range_error(VER_EPOLL_RANGE);
-                    }
 
                     const int max_events = config.max_events > 0 ? config.max_events : INIT_MAX_EVENTS;
-                    loop.events = make_shared<vector<epoll_event>>(static_cast<size_t>(max_events));
+                    loop.events = make_shared<vector<vermell::net::Poller::Event>>(static_cast<size_t>(max_events));
 
-                    epoll_event event{};
-                    event.events = EPOLLIN;
-                    event.data.fd = listener_fd;
-                    if (epoll_ctl(loop.epfd, EPOLL_CTL_ADD, listener_fd, &event) == VER_NVALUE) {
-                        close(loop.epfd);
-                        loop.listener->Close();
+                    if (!loop.poller->add(loop.listener->getDescription(), vermell::net::Poller::IN))
                         throw std::range_error(VER_EPOLL_CTL);
-                    }
 
-                    loop.io = make_shared<RequestIO>(loop.events, _routes, listener_fd, loop.epfd,
-                                                     loop.listener, config, static_mounts,
+                    loop.io = make_shared<RequestIO>(loop.events, _routes,
+                                                     loop.listener->getDescription(),
+                                                     *loop.poller, loop.listener, config,
+                                                     static_mounts,
                                                      _listen_type == neo::WHILE, pool_);
                     requests_.push_back(loop.io);
                     loops.push_back(std::move(loop));
@@ -148,8 +151,7 @@ namespace workers {
                 for (auto& loop : loops) {
                     if (loop.io)
                         loop.io->shutdown();
-                    if (loop.epfd >= 0)
-                        close(loop.epfd);
+                    loop.poller.reset();
                     loop.listener->Close();
                 }
                 requests_.clear();
@@ -160,10 +162,11 @@ namespace workers {
             const auto run_loop = [&](const Loop& loop, const bool unique) {
                 if (unique) {
                     do {
-                        const int notice = epoll_wait(loop.epfd, loop.events->data(),
-                                                      static_cast<int>(loop.events->size()), wait_timeout);
+                        const int notice = loop.poller->wait(loop.events->data(),
+                                                             static_cast<int>(loop.events->size()),
+                                                             wait_timeout);
                         if (notice == -1) {
-                            if (errno == EINTR)
+                            if (ver_interrupted())
                                 continue;
                             break;
                         }
@@ -173,10 +176,11 @@ namespace workers {
                 }
 
                 while (listen_status_.load() == neo::eStatus::START) {
-                    const int notice = epoll_wait(loop.epfd, loop.events->data(),
-                                                  static_cast<int>(loop.events->size()), wait_timeout);
+                    const int notice = loop.poller->wait(loop.events->data(),
+                                                         static_cast<int>(loop.events->size()),
+                                                         wait_timeout);
                     if (notice == -1) {
-                        if (errno == EINTR)
+                        if (ver_interrupted())
                             continue;
                         break;
                     }
@@ -196,7 +200,7 @@ namespace workers {
 
             for (auto& loop : loops) {
                 loop.io->shutdown();
-                close(loop.epfd);
+                loop.poller.reset();
                 loop.listener->Close();
             }
             requests_.clear();

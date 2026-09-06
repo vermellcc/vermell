@@ -47,8 +47,8 @@ struct Route {
 private:
     string route_name{},
            route_type{};
-    bool lock{};
-    int timeline{};
+    [[maybe_unused]] bool lock{};
+    [[maybe_unused]] int timeline{};
 
 public:
     [[maybe_unused]] explicit Route(string _route) : route_name(std::move(_route)), lock(false), timeline(0) {}

@@ -1,7 +1,5 @@
 #include <memory>
-#include <poll.h>
 #include <cerrno>
-#include <sys/uio.h>
 
 #include "../include/vermell/sockets.h"
 
@@ -16,7 +14,7 @@ int Server::Close() {
           const int fd = socket_id;
           socket_id = -1; // invalidate first: a second Close() can never double-close
 
-          if (fd >= 0 && close(fd) < 0) {
+          if (fd >= 0 && ver_close_socket(fd) < 0) {
                throw std::range_error("Failed to close socket");
           }
           return VER_SOCKET_OK;
@@ -85,52 +83,55 @@ void Server::setSessions(int max) {
 }
 
 int Server::setNonblocking(const int& socket_id) {
-        int flags = fcntl(socket_id, F_GETFL, 0);
-        if (flags == -1){
-            return VER_SOCKET_ERROR;
-        }
-        if (fcntl(socket_id, F_SETFL, flags | O_NONBLOCK) < 0){
-            return VER_SOCKET_ERROR;
-        }
-        return VER_SOCKET_OK;
+        return ver_set_nonblocking(socket_id);
 }
 
 
 int Server::on() {
      try {
 
+         // Winsock needs a process-wide WSAStartup before the first socket
+         // call (no-op on POSIX).
+         vermell::net::startup();
+
          // A Server can be re-used: drop any stale descriptor first so a
          // second on() never leaks the previous listening socket.
          if (socket_id >= 0) {
-              close(socket_id);
+              ver_close_socket(socket_id);
               socket_id = -1;
          }
 
-         const int fd = socket(DOMAIN, TYPE, PROTOCOL);
+         const int fd = static_cast<int>(::socket(VER_DOMAIN, VER_SOCK_TYPE, VER_SOCK_PROTOCOL));
          if (fd < 0) {
              throw std::range_error("Failed to create domain socket");
          }
          socket_id = fd;
 
-         if (setsockopt(socket_id,
+         if (ver_set_int_option(socket_id,
                         SOL_SOCKET,
                         SO_REUSEADDR,
-                        &*option_mame,
-                        sizeof(*option_mame)) != 0x0) {
+                        *option_mame) != 0x0) {
              throw std::range_error("Failed to set socket options");
          }
 
          // SO_REUSEPORT is strictly opt-in (Config::reuse_port): with it on,
          // any same-UID process may bind this port and intercept a share of
-         // the traffic. Off by default.
+         // the traffic. Off by default. Not offered on Windows (no fair
+         // port-sharing primitive; multiple accept loops share one
+         // listener there instead).
+#if defined(SO_REUSEPORT)
          if (reuse_port_
-             && setsockopt(socket_id,
+             && ver_set_int_option(socket_id,
                            SOL_SOCKET,
                            SO_REUSEPORT,
-                           &*option_mame,
-                           sizeof(*option_mame)) != 0x0) {
+                           *option_mame) != 0x0) {
              throw std::range_error("Failed to set socket options");
          }
+#endif
+
+         // macOS/BSD: sends on a dead peer raise SIGPIPE without this
+         // (MSG_NOSIGNAL is Linux-only). No-op elsewhere.
+         ver_disable_sigpipe(socket_id);
 
          if(setNonblocking(socket_id) == VER_SOCKET_ERROR)
              throw std::runtime_error("Failed to set nonblocking");
@@ -154,7 +155,7 @@ int Server::on() {
      catch (const std::exception &e) {
           // Never leave a half-open listening socket behind on failure.
           if (socket_id >= 0) {
-               close(socket_id);
+               ver_close_socket(socket_id);
                socket_id = -1;
           }
           std::cerr << e.what() << '\n';
@@ -171,7 +172,8 @@ void Server::getResponseProcessing() {
         vector<char> buffer;
         buffer.resize(static_cast<size_t>(*buffer_size));
 
-        const ssize_t total_bytes = read(socket_id, buffer.data(), buffer.size());
+        const ssize_t total_bytes = ::recv(socket_id, buffer.data(),
+                                           static_cast<int>(buffer.size()), 0);
         if (total_bytes <= 0)
             throw std::range_error("response is empty");
 
@@ -215,53 +217,12 @@ void Server::sendResponse(const string& head, const string& body) const {
      if (socket_id < 0)
           return;
 
-     const int fd = socket_id;
-     const char* bufs[2] = { head.data(), body.data() };
-     size_t lens[2] = { head.size(), body.size() };
-     size_t done = 0;
-     const size_t total = lens[0] + lens[1];
-
-     while (done < total) {
-          iovec iov[2];
-          int count = 0;
-          for (int i = 0; i < 2; ++i) {
-               if (lens[i] == 0)
-                    continue;
-               iov[count].iov_base = const_cast<char*>(bufs[i]);
-               iov[count].iov_len = lens[i];
-               ++count;
-          }
-
-          msghdr msg{};
-          msg.msg_iov = iov;
-          msg.msg_iovlen = static_cast<size_t>(count);
-
-          const ssize_t bytes_send = sendmsg(fd, &msg, MSG_NOSIGNAL);
-          if (bytes_send > 0) {
-               done += static_cast<size_t>(bytes_send);
-               size_t consumed = static_cast<size_t>(bytes_send);
-               for (int i = 0; i < 2 && consumed > 0; ++i) {
-                    const size_t take = std::min(consumed, lens[i]);
-                    lens[i] -= take;
-                    bufs[i] += take;
-                    consumed -= take;
-               }
-               continue;
-          }
-
-          if (bytes_send == -1 && errno == EINTR)
-               continue;
-
-          if (bytes_send == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-               pollfd pfd{};
-               pfd.fd = fd;
-               pfd.events = POLLOUT;
-
-               if (poll(&pfd, 1, write_timeout_ms) > 0 && (pfd.revents & POLLOUT))
-                    continue;
-          }
-
-          break;
-     }
+     // ver_send2 keeps the old contract: head + body written with scatter
+     // sendmsg/WSASend, retried on EINTR, one writability wait when the
+     // send buffer is full, then stop. Works on every platform.
+     (void)ver_send2(socket_id,
+                     head.data(), head.size(),
+                     body.data(), body.size(),
+                     0, write_timeout_ms);
 }
 

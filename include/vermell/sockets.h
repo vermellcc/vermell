@@ -1,18 +1,12 @@
 #ifndef VERMELL_SOCKETS_HPP
 #define VERMELL_SOCKETS_HPP
 
-
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/epoll.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
+#include "util/portability.h"
+#include "net/poller.h"
 #include <memory>
 #include <stdexcept>
 
-
 #include <memory>
-#include <unistd.h>
 #include <string>
 #include <sstream>
 #include <cstring>
@@ -38,9 +32,11 @@ using std::function;
 
 constexpr uint16_t DEFAULT_PORT = 0xBB8;
 
-constexpr int DOMAIN = AF_INET;
-constexpr int TYPE = SOCK_STREAM;
-constexpr int PROTOCOL = 0;
+// VER_ prefix: bare DOMAIN/TYPE/PROTOCOL collide with macros from other
+// system headers (e.g. DOMAIN in macOS <math.h>).
+constexpr int VER_DOMAIN = AF_INET;
+constexpr int VER_SOCK_TYPE = SOCK_STREAM;
+constexpr int VER_SOCK_PROTOCOL = 0;
 
 constexpr int VER_SOCKET_ERROR = -0x1;
 constexpr int VER_SOCKET_OK = 0x0;
@@ -111,7 +107,7 @@ class Server final : public Engine {
      // same-UID process can bind the same port and intercept traffic.
      bool reuse_port_ = false;
 
-     std::vector<epoll_event> events;
+     std::vector<vermell::net::Poller::Event> events;
 
   public:
 
@@ -147,11 +143,11 @@ class Server final : public Engine {
      // this avoids copying the whole body into the response storage.
      void setResponse(string &&data);
 
-     inline void setEpollEvents(std::vector<epoll_event> const &e){events = e;}
+     inline void setEpollEvents(std::vector<vermell::net::Poller::Event> const &e){events = e;}
      inline void setEpollfd(int const arg) noexcept { epoll_fd = arg; }
      inline void setNotices(int const arg) noexcept { notices = arg;  }
 
-     [[nodiscard]] inline std::vector<epoll_event> getEpollEvents() const {return events; }
+     [[nodiscard]] inline std::vector<vermell::net::Poller::Event> getEpollEvents() const {return events; }
      [[nodiscard]] inline int getEpollfd() const {return epoll_fd;}
      [[nodiscard]] inline int getNotices() const {return notices;}
 

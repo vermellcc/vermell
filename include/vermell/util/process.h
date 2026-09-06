@@ -15,8 +15,9 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
-#include <sys/types.h>
 #include <vector>
+
+#include "portability.h" // ver_pid_t on every platform
 
 namespace vermell {
 
@@ -28,10 +29,10 @@ namespace vermell {
         const std::string cwd;        // working directory the process was launched from
         const std::string hostname;   // machine host name
         const std::string username;   // user that owns the process
-        const std::string platform;   // "linux"
+        const std::string platform;   // "linux", "darwin" or "windows"
         const std::string arch;       // "x86_64", "aarch64", "arm", "i386", ...
-        const pid_t pid;              // process id
-        const pid_t ppid;             // parent process id
+        const ver_pid_t pid;          // process id
+        const ver_pid_t ppid;         // parent process id (0 on Windows)
         const std::vector<std::string> argv; // command line arguments
 
         Process(const Process&) = delete;

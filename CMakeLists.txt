@@ -4,12 +4,38 @@ project(vermell VERSION 1.0.5)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(VERMELL_HARDENING_FLAGS "-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE")
+if(MSVC)
+    # MSVC has no GCC-style hardening flags; keep the equivalent basics.
+    set(CMAKE_CXX_FLAGS_DEBUG "/W4 /permissive- /utf-8 /EHsc /Zi /FS")
+    set(CMAKE_CXX_FLAGS_RELEASE "/W4 /permissive- /utf-8 /EHsc /O2")
+elseif(WIN32) # MinGW / Clang on Windows
+    set(VERMELL_HARDENING_FLAGS "-fstack-protector-strong")
+    set(CMAKE_CXX_FLAGS_DEBUG "-Wall -Wextra -pedantic -Wnon-virtual-dtor -O3 -g ${VERMELL_HARDENING_FLAGS}")
+    set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -pedantic -Wnon-virtual-dtor -O3 ${VERMELL_HARDENING_FLAGS}")
+else()
+    # -fPIE is redundant on Apple (PIE is the toolchain default and the
+    # driver would forward -pie to dylib links, which ld64 rejects).
+    set(VERMELL_HARDENING_FLAGS "-fstack-protector-strong")
+    if(NOT APPLE)
+        list(APPEND VERMELL_HARDENING_FLAGS "-fPIE")
+    endif()
+    # _FORTIFY_SOURCE only on Linux: AppleClang predefines it and warns on
+    # redefinition; glibc's fortify headers are what it actually hardens.
+    if(NOT APPLE)
+        list(APPEND VERMELL_HARDENING_FLAGS "-D_FORTIFY_SOURCE=2")
+    endif()
+    set(CMAKE_CXX_FLAGS_DEBUG "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 -g ${VERMELL_HARDENING_FLAGS}")
+    set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 ${VERMELL_HARDENING_FLAGS}")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        string(APPEND CMAKE_CXX_FLAGS_DEBUG " -fsanitize=address")
+    endif()
+endif()
 
-set(CMAKE_CXX_FLAGS_DEBUG "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 -g -fsanitize=address ${VERMELL_HARDENING_FLAGS}")
-set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 ${VERMELL_HARDENING_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-pie -Wl,-z,relro,-z,now")
-set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-pie -Wl,-z,relro,-z,now")
+# -pie/-z relro are ELF linkers; ld64 (macOS) and lld-link (Windows) reject them.
+if(NOT WIN32 AND NOT APPLE)
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-pie -Wl,-z,relro,-z,now")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-pie -Wl,-z,relro,-z,now")
+endif()
 
 file(GLOB_RECURSE SOURCES
         "${CMAKE_SOURCE_DIR}/sources/*.cpp"
@@ -25,6 +51,13 @@ set_target_properties(vermell PROPERTIES
     SOVERSION 1
 )
 target_include_directories(vermell PUBLIC "${CMAKE_SOURCE_DIR}/include")
+
+# Winsock2 for every socket call; PSAPI for Process::memory_usage().
+# PUBLIC so executables linking vermell pick them up too.
+if(WIN32)
+    target_link_libraries(vermell PUBLIC ws2_32)
+    target_link_libraries(vermell PUBLIC psapi)
+endif()
 
 option(TESTING "Enable testing" OFF)
 if (TESTING)

@@ -23,7 +23,7 @@ public:
 
     explicit dataRender(const std::function<dataRender(dataRender &data)>& _parser) {
         const dataRender temp_render = _parser(*this);
-        variables = std::move(temp_render.getVariables());
+        variables = temp_render.getVariables(); // returns by value: copy elision, no std::move
     }
     ~dataRender() = default;
 

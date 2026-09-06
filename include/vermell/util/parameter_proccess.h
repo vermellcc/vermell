@@ -35,7 +35,7 @@ using std::shared_ptr;
 
 class HTTP_QUERY
 {
-     size_t max_iterator{50};
+     [[maybe_unused]] size_t max_iterator{50};
 public:
     HTTP_QUERY();
     ~HTTP_QUERY();

@@ -5,9 +5,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <mutex>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <netinet/in.h>
+#include <unordered_map>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -17,6 +15,7 @@
 
 #include "../config.hpp"
 #include "../routes.hpp"
+#include "../net/poller.h"
 #include "request.hpp"
 #include "../util/nterminal.h"
 #include "../util/static_files.h"
@@ -30,10 +29,17 @@ class RequestIO {
     public:
 
     private:
-    shared_ptr<std::vector<epoll_event>> events;
+    // One Event slot per returned readiness event, filled by the platform
+    // poller (epoll / kqueue / WSAPoll) and consumed by Dispatch().
+    shared_ptr<std::vector<vermell::net::Poller::Event>> events;
     shared_ptr<RoutesMap>  routes;
     unique_ptr<int> file_descriptor;
-    unique_ptr<int> epoll_fd;
+    // Non-owning: the event loop in RouterEpoll owns the Poller and outlives
+    // this object.
+    vermell::net::Poller* poller_ = nullptr;
+    // Loop wakeup channel: eventfd (Linux), self-pipe (macOS/BSD) or a
+    // loopback socket pair (Windows).
+    unique_ptr<vermell::net::Waker> waker_;
     shared_ptr<Server> connection;
 
     mutable std::shared_mutex config_mutex_;
@@ -66,30 +72,24 @@ class RequestIO {
         bool keep_alive;
     };
 
-    mutable std::vector<std::optional<ConnState>> pending_;
+    // Keyed by fd (a std::unordered_map on every platform: Windows socket
+    // handles are never recycled and would make a fd-indexed vector grow
+    // without bound on long-running servers).
+    mutable std::unordered_map<int, ConnState> pending_;
 
     mutable std::vector<char> read_scratch_;
 
-    mutable int notify_fd_ = -1;
     mutable std::mutex completed_mutex_;
     mutable std::vector<Completion> completed_;
 
     [[nodiscard]] bool has_pending(const int fd) const noexcept {
-        return fd >= 0 && static_cast<size_t>(fd) < pending_.size()
-            && pending_[static_cast<size_t>(fd)].has_value();
+        return pending_.find(fd) != pending_.end();
     }
     ConnState& pending_slot(const int fd) const {
-        const size_t u = static_cast<size_t>(fd);
-        if (u >= pending_.size())
-            pending_.resize(u + 1);
-        auto& slot = pending_[u];
-        if (!slot.has_value())
-            slot.emplace();
-        return *slot;
+        return pending_[fd];
     }
     void drop_pending(const int fd) const noexcept {
-        if (fd >= 0 && static_cast<size_t>(fd) < pending_.size())
-            pending_[static_cast<size_t>(fd)].reset();
+        pending_.erase(fd);
     }
 
     void AcceptPending() const;
@@ -105,10 +105,10 @@ class RequestIO {
 
     public:
 
-     RequestIO(const shared_ptr<vector<epoll_event>>&,
+     RequestIO(const shared_ptr<vector<vermell::net::Poller::Event>>&,
                const shared_ptr<RoutesMap> &,
-               int &,
-               int &,
+               int,
+               vermell::net::Poller &,
                const shared_ptr<Server>&,
                const vermell::Config &config = {},
                const std::vector<vermell::StaticMount>& static_mounts = {},

@@ -1,11 +1,7 @@
 #include "suite.h"
 
+#include "../include/vermell/util/portability.h"
 #include "../include/vermell/util/secure_render.h"
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -860,7 +856,7 @@ TEST(ParserHardeningUnit, ParseAcceptsOnlyStrictRequestLines) {
      EXPECT_FALSE(Msg::parse("GET  / HTTP/1.1\r\n\r\n").has_value());            // empty target
      EXPECT_FALSE(Msg::parse("GET / HTTP/1.1 EXTRA\r\n\r\n").has_value());       // four parts
      EXPECT_FALSE(Msg::parse("GET / XYZ\r\n\r\n").has_value());                  // bogus version
-     EXPECT_FALSE(Msg::parse(string("G\x01""T / HTTP/1.1\r\n\r\n", 20)).has_value()); // control char in method
+     EXPECT_FALSE(Msg::parse(string("G\x01T / HTTP/1.1\r\n\r\n")).has_value()); // control char in method
 }
 
 TEST(ParserHardeningUnit, HostIsRequiredAndUniqueForHttp11) {
@@ -938,7 +934,9 @@ TEST(ParserHardeningUnit, MultipartNameMatchesOnlyAtParameterBoundary) {
 
 // Sends raw bytes to a one-shot server and returns the raw wire response.
 static string raw_exchange(const uint16_t port, const string& bytes) {
-     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+     vermell::net::startup(); // WSAStartup on Windows, no-op elsewhere
+
+     int fd = static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
      if (fd < 0)
          return {};
 
@@ -955,27 +953,27 @@ static string raw_exchange(const uint16_t port, const string& bytes) {
              connected = true;
              break;
          }
-         ::close(fd);
-         ::usleep(20 * 1000); // 20 ms
-         fd = ::socket(AF_INET, SOCK_STREAM, 0);
+         ver_close_socket(fd);
+         std::this_thread::sleep_for(std::chrono::milliseconds(20));
+         fd = static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
          if (fd < 0)
              return {};
      }
      if (!connected) {
-         if (fd >= 0) ::close(fd);
+         if (fd >= 0) ver_close_socket(fd);
          return {};
      }
 
      size_t sent = 0;
      while (sent < bytes.size()) {
-         const ssize_t n = ::send(fd, bytes.data() + sent, bytes.size() - sent, MSG_NOSIGNAL);
+         const ssize_t n = ::send(fd, bytes.data() + sent, bytes.size() - sent, VER_MSG_NOSIGNAL);
          if (n <= 0) {
-             ::close(fd);
+             ver_close_socket(fd);
              return {};
          }
          sent += static_cast<size_t>(n);
      }
-     ::shutdown(fd, SHUT_WR); // half-close: no more bytes will come
+     ::shutdown(fd, VER_SHUT_WR); // half-close: no more bytes will come
 
      string response;
      char buf[4096];
@@ -985,7 +983,7 @@ static string raw_exchange(const uint16_t port, const string& bytes) {
              break;
          response.append(buf, static_cast<size_t>(n));
      }
-     ::close(fd);
+     ver_close_socket(fd);
      return response;
 }
 

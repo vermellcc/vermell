@@ -28,7 +28,8 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <sys/stat.h>
+
+#include "../util/portability.h" // ver_stat + S_ISREG/S_ISDIR on every platform
 
 #include "../http/message.hpp"
 #include "../http/response.hpp"
@@ -182,11 +183,11 @@ namespace vermell {
         return false;
     }
 
-    inline std::string StaticMount::make_etag(const struct stat& st) noexcept {
+    inline std::string StaticMount::make_etag(const ver_stat_t& st) noexcept {
         // Strong opaque tag from size + mtime (seconds): cheap, stable for
         // the whole life of an unchanged build artifact.
         return "\"" + std::to_string(static_cast<long long>(st.st_size)) + "-"
-                    + std::to_string(static_cast<long long>(st.st_mtim.tv_sec)) + "\"";
+                    + std::to_string(ver_mtime_sec(st)) + "\"";
     }
 
     inline std::string StaticMount::cache_control_header() const {
@@ -234,9 +235,9 @@ namespace vermell {
 
         const std::string cache_control = cache_control_header();
         if (options_.cache) {
-            struct stat mst{};
+            ver_stat_t mst{};
             std::string etag;
-            if (::stat(full.c_str(), &mst) == 0 && S_ISREG(mst.st_mode))
+            if (ver_stat(full.c_str(), &mst) == 0 && S_ISREG(mst.st_mode))
                 etag = make_etag(mst);
             if (!etag.empty() && etag_matches(if_none_match, etag))
                 return respond(304, {}, vermell::mime::of(full), cache_control, etag);
@@ -300,8 +301,8 @@ namespace vermell {
         full += rel;
 
         // Directory (or the mount root): serve the index file instead.
-        struct stat st{};
-        const bool is_dir = ::stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        ver_stat_t st{};
+        const bool is_dir = ver_stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
         if (is_dir || rel.empty()) {
             if (full.back() != '/')
                 full.push_back('/');

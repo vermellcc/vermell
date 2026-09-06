@@ -27,6 +27,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <optional>
 #include <string>
@@ -479,11 +480,20 @@ namespace vermell {
                         return Json(v);
                     // does not fit in int64: degrade to double below
                 }
+                // std::from_chars for floating point is unavailable on older
+                // libc++ (macOS < 26); strtod parses the same general-format
+                // token (the grammar above already validated the shape) and
+                // exists everywhere.
                 double d{};
-                const auto res = std::from_chars(token.data(), token.data() + token.size(),
-                                                 d, std::chars_format::general);
-                if (res.ec != std::errc{} || res.ptr != token.data() + token.size() || !std::isfinite(d))
-                    return std::nullopt;
+                {
+                    const std::string tmp(token);
+                    char* end = nullptr;
+                    d = std::strtod(tmp.c_str(), &end);
+                    if (end == nullptr
+                        || static_cast<size_t>(end - tmp.c_str()) != token.size()
+                        || !std::isfinite(d))
+                        return std::nullopt;
+                }
                 return Json(d);
             }
         };
