@@ -1,27 +1,13 @@
+// Core request pump over the portable vermell::net SPI (no <sys/*> here).
+
 #include "../../include/vermell/request/io.h"
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstring>
-#include <netinet/tcp.h>
-#include <sys/uio.h>
+#include <string>
 
 namespace {
-
-    void send_best_effort(const int fd, const vermell::http::WireResponse& response) {
-        iovec iov[2];
-        iov[0].iov_base = const_cast<char*>(response.head.data());
-        iov[0].iov_len = response.head.size();
-        iov[1].iov_base = const_cast<char*>(response.body.data());
-        iov[1].iov_len = response.body.size();
-
-        msghdr msg{};
-        msg.msg_iov = iov;
-        msg.msg_iovlen = 2;
-        const ssize_t written = ::sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
-        (void)written;
-    }
 
     vermell::http::WireResponse error_response(const int code, const char* error) {
         vermell::http::Response response;
@@ -43,72 +29,73 @@ namespace {
         return !message.version.starts_with("HTTP/1.0");
     }
 
+    std::shared_ptr<vermell::net::StreamOps> default_stream_ops() {
+        if (const auto platform = vermell::net::default_platform();
+            platform != nullptr && platform->transport != nullptr)
+            return platform->transport->stream_ops();
+        return nullptr;
+    }
+
 } // namespace
 
-RequestIO::RequestIO(const shared_ptr<vector<epoll_event>> &evs,
-                     const std::shared_ptr<RoutesMap> &routes,
-                     int &listener_fd,
-                     int &epfd,
-                     const shared_ptr<Server> &con,
+RequestIO::RequestIO(vermell::net::EventLoop& loop,
+                     const shared_ptr<RoutesMap> &routes,
+                     const int listener_fd,
+                     vermell::net::TcpListener& listener,
                      const vermell::Config &config,
                      const std::vector<vermell::StaticMount>& static_mounts,
                      const bool allow_keep_alive,
-                     const shared_ptr<threading::ThreadPool>& pool)
-    : events(evs),
+                     const shared_ptr<threading::ThreadPool>& pool,
+                     std::shared_ptr<vermell::net::StreamOps> stream_ops)
+    : loop_(&loop),
+      listener_(&listener),
+      listener_fd_(listener_fd),
+      stream_ops_(std::move(stream_ops)),
       routes(routes),
-      file_descriptor(std::make_unique<int>(listener_fd)),
-      epoll_fd(std::make_unique<int>(epfd)),
-      connection(con),
       config_(std::make_shared<const vermell::Config>(config)),
       static_mounts_(static_mounts),
       allow_keep_alive_(allow_keep_alive) {
 
     thread_pool_ = pool;
 
-    notify_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    epoll_event ev{};
-    ev.events = EPOLLIN;
-    ev.data.fd = notify_fd_;
-    epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, notify_fd_, &ev);
+    if (stream_ops_ == nullptr)
+        stream_ops_ = default_stream_ops();
+
+    if (listener_fd_ >= 0)
+        loop_->add(listener_fd_, vermell::net::Interest::Read);
 }
 
 
-void RequestIO::Dispatch(const int notice) const {
+void RequestIO::dispatch(const std::vector<vermell::net::Event>& evs) const {
 
-    if (notice <= 0) {
+    DrainCompletions();
+
+    if (evs.empty()) {
         SweepStale();
         return;
     }
 
-    for (int i = 0; i < notice; i++) {
+    for (const auto& ev : evs) {
+        const int event_fd = ev.fd;
 
-        const int event_fd = events->operator[](i).data.fd;
-        const uint32_t event_mask = events->operator[](i).events;
-
-        if (event_fd == notify_fd_) {
-            DrainCompletions();
-            continue;
-        }
-
-        if (event_fd == *file_descriptor) {
+        if (event_fd == listener_fd_) {
             AcceptPending();
             continue;
         }
 
-        if (event_mask & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-            if (event_mask & EPOLLIN)
+        // Unknown fds (wake fd, closed races) carry no state: ignore them.
+        if (!has_pending(event_fd))
+            continue;
+
+        if (ev.error || ev.closed) {
+            if (ev.readable)
                 HandleReadable(event_fd);
-            if (has_pending(event_fd)) {
-                epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, event_fd, nullptr);
-                close(event_fd);
-                drop_pending(event_fd);
-                active_connections_.fetch_sub(1);
-                handled_.fetch_add(1);
-            }
+            if (has_pending(event_fd))
+                remove_and_close(event_fd);
             continue;
         }
 
-        if (event_mask & EPOLLIN)
+        if (ev.readable)
             HandleReadable(event_fd);
     }
 
@@ -116,47 +103,67 @@ void RequestIO::Dispatch(const int notice) const {
 }
 
 
+void RequestIO::remove_and_close(const int fd) const {
+    if (loop_ != nullptr)
+        loop_->remove(fd);
+    if (stream_ops_ != nullptr)
+        stream_ops_->close_fd(fd);
+    drop_pending(fd);
+    active_connections_.fetch_sub(1);
+    handled_.fetch_add(1);
+}
+
+
+void RequestIO::send_best_effort(const int fd,
+                                 const vermell::http::WireResponse& response) const {
+    if (stream_ops_ == nullptr)
+        return;
+    std::string wire;
+    wire.reserve(response.head.size() + response.body.size());
+    wire.append(response.head);
+    wire.append(response.body);
+    // timeout 0: single attempt, never stall the loop.
+    stream_ops_->send_all(fd, wire.data(), wire.size(), 0, nullptr);
+}
+
+
 void RequestIO::AcceptPending() const {
 
+    if (listener_ == nullptr || loop_ == nullptr || stream_ops_ == nullptr)
+        return;
+
     for (;;) {
-        sockaddr_in client_addr{};
-        socklen_t client_addr_len = sizeof(client_addr);
+        std::string err;
+        const vermell::net::Accepted accepted = listener_->accept(&err);
 
-        const int client_file_descriptor = accept(*file_descriptor,
-                                                  reinterpret_cast<sockaddr *>(&client_addr),
-                                                  &client_addr_len);
-
-        if (client_file_descriptor == VER_NVALUE) {
-            if (errno == EINTR)
-                continue;
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-                terminal(VER_EPOLL_CERR, strerror(errno));
+        if (accepted.fd < 0) {
+            if (!err.empty())
+                terminal(VER_EPOLL_CERR, err.c_str());
             return;
         }
+
+        const int client_file_descriptor = accepted.fd;
 
         const auto cfg = config_snapshot();
         if (cfg->max_connections != 0
             && active_connections_.load() >= cfg->max_connections) {
-            close(client_file_descriptor);
+            stream_ops_->close_fd(client_file_descriptor);
             continue;
         }
 
-        if (Server::setNonblocking(client_file_descriptor) == VER_SOCKET_ERROR) {
-            close(client_file_descriptor);
+        std::string nb_err;
+        if (!stream_ops_->set_nonblocking(client_file_descriptor, &nb_err)) {
+            stream_ops_->close_fd(client_file_descriptor);
             continue;
         }
 
-        int nodelay = 1;
-        (void)::setsockopt(client_file_descriptor, IPPROTO_TCP, TCP_NODELAY,
-                           &nodelay, static_cast<socklen_t>(sizeof(nodelay)));
+        stream_ops_->set_tcp_nodelay(client_file_descriptor);
 
-        epoll_event client_event{};
-        client_event.events = EPOLLIN;
-        client_event.data.fd = client_file_descriptor;
-
-        if (epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, client_file_descriptor, &client_event) == VER_NVALUE) {
-            terminal(VER_EPOLL_CERR, strerror(errno));
-            close(client_file_descriptor);
+        try {
+            loop_->add(client_file_descriptor, vermell::net::Interest::Read);
+        } catch (const std::exception& e) {
+            terminal(VER_EPOLL_CERR, e.what());
+            stream_ops_->close_fd(client_file_descriptor);
             continue;
         }
 
@@ -188,7 +195,7 @@ void RequestIO::HandleReadable(const int fd) const {
     const size_t bufsz = read_scratch_.size();
     bool peer_closed = false;
     for (;;) {
-        const ssize_t bytes = recv(fd, buf, bufsz, 0);
+        const long bytes = stream_ops_->recv_some(fd, buf, bufsz);
         if (bytes > 0) {
             st.buffer.append(buf, static_cast<size_t>(bytes));
             st.last_activity = std::chrono::steady_clock::now();
@@ -202,9 +209,7 @@ void RequestIO::HandleReadable(const int fd) const {
             peer_closed = true;
             break;
         }
-        if (errno == EINTR)
-            continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        if (bytes == -1)
             break;
         Reject(fd, 400, "malformed request");
         return;
@@ -281,8 +286,11 @@ void RequestIO::HandleReadable(const int fd) const {
 
         if (!thread_pool_) {
             if (!serve_inline(fd, std::move(raw))) {
-                epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-                close(fd);
+                // serve_inline() already counted it: close without double-counting.
+                if (loop_ != nullptr)
+                    loop_->remove(fd);
+                if (stream_ops_ != nullptr)
+                    stream_ops_->close_fd(fd);
                 drop_pending(fd);
                 active_connections_.fetch_sub(1);
                 return;
@@ -290,7 +298,8 @@ void RequestIO::HandleReadable(const int fd) const {
             continue;
         }
 
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        if (loop_ != nullptr)
+            loop_->remove(fd);
         if (!st.buffer.empty())
             st.dispatching = true;
         else
@@ -327,9 +336,11 @@ void RequestIO::SweepStale() const {
             continue;
 
         const int fd = static_cast<int>(i);
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        if (loop_ != nullptr)
+            loop_->remove(fd);
         send_best_effort(fd, error_response(408, "request timeout"));
-        close(fd);
+        if (stream_ops_ != nullptr)
+            stream_ops_->close_fd(fd);
         active_connections_.fetch_sub(1);
         handled_.fetch_add(1);
         drop_pending(fd);
@@ -352,7 +363,8 @@ void RequestIO::DispatchTask(const int fd, std::string raw) const {
         return;
 
     send_best_effort(fd, error_response(503, "server busy"));
-    close(fd);
+    if (stream_ops_ != nullptr)
+        stream_ops_->close_fd(fd);
     drop_pending(fd);
     active_connections_.fetch_sub(1);
     handled_.fetch_add(1);
@@ -360,9 +372,11 @@ void RequestIO::DispatchTask(const int fd, std::string raw) const {
 
 
 void RequestIO::Reject(const int fd, const int code, const char* error) const {
-    epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    if (loop_ != nullptr)
+        loop_->remove(fd);
     send_best_effort(fd, error_response(code, error));
-    close(fd);
+    if (stream_ops_ != nullptr)
+        stream_ops_->close_fd(fd);
     drop_pending(fd);
     active_connections_.fetch_sub(1);
     handled_.fetch_add(1);
@@ -371,8 +385,11 @@ void RequestIO::Reject(const int fd, const int code, const char* error) const {
 
 void RequestIO::ServeRequest(const int fd, std::string raw) const {
 
+    // The listening port is not observable from request handlers (Query is
+    // built from the Message only), so the per-request Server keeps the default.
     Server base;
-    base.setPort(connection->getPort());
+    base.setPort(DEFAULT_PORT);
+    base.set_stream_ops(stream_ops_);
     base.setSocketId(fd);
     base.setWriteTimeout(config_snapshot()->write_timeout);
     base.setResponse(std::move(raw));
@@ -385,8 +402,10 @@ void RequestIO::ServeRequest(const int fd, std::string raw) const {
 
 bool RequestIO::serve_inline(const int fd, std::string raw) const {
 
+    // Same as ServeRequest above: the port is not handler-observable.
     Server base;
-    base.setPort(connection->getPort());
+    base.setPort(DEFAULT_PORT);
+    base.set_stream_ops(stream_ops_);
     base.setSocketId(fd);
     base.setWriteTimeout(config_snapshot()->write_timeout);
     base.setResponse(std::move(raw));
@@ -398,9 +417,6 @@ bool RequestIO::serve_inline(const int fd, std::string raw) const {
 
 
 void RequestIO::DrainCompletions() const {
-    uint64_t counter;
-    while (::read(notify_fd_, &counter, sizeof counter) > 0) {}
-
     std::vector<Completion> done;
     {
         std::lock_guard<std::mutex> lock(completed_mutex_);
@@ -410,7 +426,8 @@ void RequestIO::DrainCompletions() const {
         if (c.keep_alive)
             RearmConnection(c.fd);
         else {
-            close(c.fd);
+            if (stream_ops_ != nullptr)
+                stream_ops_->close_fd(c.fd);
             drop_pending(c.fd);
             active_connections_.fetch_sub(1);
         }
@@ -427,10 +444,15 @@ void RequestIO::RearmConnection(const int fd) const {
     st.head_known = false;
     st.dispatching = false;
 
-    epoll_event ev{};
-    ev.events = EPOLLIN;
-    ev.data.fd = fd;
-    epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    if (loop_ != nullptr) {
+        try {
+            loop_->add(fd, vermell::net::Interest::Read);
+        } catch (const std::exception& e) {
+            terminal(VER_EPOLL_CERR, e.what());
+            remove_and_close(fd);
+            return;
+        }
+    }
 
     if (!st.buffer.empty())
         HandleReadable(fd);
@@ -442,9 +464,9 @@ void RequestIO::complete_connection(const int fd, const bool keep_alive) const {
         std::lock_guard<std::mutex> lock(completed_mutex_);
         completed_.push_back({fd, keep_alive});
     }
-    const uint64_t one = 1;
-    const ssize_t written = ::write(notify_fd_, &one, sizeof one);
-    (void)written;
+    // Wake the loop so the completion is picked up promptly.
+    if (loop_ != nullptr)
+        loop_->wake();
 }
 
 
@@ -458,7 +480,8 @@ void RequestIO::shutdown() const {
         done.swap(completed_);
     }
     for (const Completion& c : done) {
-        close(c.fd);
+        if (stream_ops_ != nullptr)
+            stream_ops_->close_fd(c.fd);
         drop_pending(c.fd);
         active_connections_.fetch_sub(1);
     }
@@ -467,11 +490,16 @@ void RequestIO::shutdown() const {
         if (!pending_[i].has_value())
             continue;
         const int fd = static_cast<int>(i);
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-        close(fd);
+        if (loop_ != nullptr)
+            loop_->remove(fd);
+        if (stream_ops_ != nullptr)
+            stream_ops_->close_fd(fd);
         active_connections_.fetch_sub(1);
     }
     pending_.clear();
+
+    if (loop_ != nullptr)
+        loop_->wake();
 }
 
 

@@ -5,12 +5,11 @@
 #include <optional>
 #include <shared_mutex>
 #include <mutex>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <netinet/in.h>
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <string>
+#include <vector>
 
 #include "../util/enums.h"
 #include "../util/parameter_proccess.h"
@@ -21,6 +20,9 @@
 #include "../util/nterminal.h"
 #include "../util/static_files.h"
 #include "../sockets.h"
+#include "../net/event_loop.h"
+#include "../net/transport.h"
+#include "../net/platform.h"
 #include "../threading/thread_pool.h"
 
 using std::make_shared, std::vector, std::unique_ptr;
@@ -30,11 +32,13 @@ class RequestIO {
     public:
 
     private:
-    shared_ptr<std::vector<epoll_event>> events;
+    // Non-owning: the router owns the loop, the listener, and the stream ops.
+    vermell::net::EventLoop* loop_ = nullptr;
+    vermell::net::TcpListener* listener_ = nullptr;
+    int listener_fd_ = -1;
+    std::shared_ptr<vermell::net::StreamOps> stream_ops_;
+
     shared_ptr<RoutesMap>  routes;
-    unique_ptr<int> file_descriptor;
-    unique_ptr<int> epoll_fd;
-    shared_ptr<Server> connection;
 
     mutable std::shared_mutex config_mutex_;
     std::shared_ptr<const vermell::Config> config_;
@@ -70,7 +74,6 @@ class RequestIO {
 
     mutable std::vector<char> read_scratch_;
 
-    mutable int notify_fd_ = -1;
     mutable std::mutex completed_mutex_;
     mutable std::vector<Completion> completed_;
 
@@ -92,6 +95,9 @@ class RequestIO {
             pending_[static_cast<size_t>(fd)].reset();
     }
 
+    void remove_and_close(int fd) const;
+    void send_best_effort(int fd, const vermell::http::WireResponse& response) const;
+
     void AcceptPending() const;
     void HandleReadable(int fd) const;
     void SweepStale() const;
@@ -105,17 +111,19 @@ class RequestIO {
 
     public:
 
-     RequestIO(const shared_ptr<vector<epoll_event>>&,
-               const shared_ptr<RoutesMap> &,
-               int &,
-               int &,
-               const shared_ptr<Server>&,
-               const vermell::Config &config = {},
-               const std::vector<vermell::StaticMount>& static_mounts = {},
-               bool allow_keep_alive = true,
-               const shared_ptr<threading::ThreadPool>& pool = nullptr);
+     // Portable constructor: works against any backend; null stream_ops resolves from default_platform().
+      RequestIO(vermell::net::EventLoop& loop,
+                const shared_ptr<RoutesMap>& routes,
+                int listener_fd,
+                vermell::net::TcpListener& listener,
+                const vermell::Config& config = {},
+                const std::vector<vermell::StaticMount>& static_mounts = {},
+                bool allow_keep_alive = true,
+                const shared_ptr<threading::ThreadPool>& pool = nullptr,
+                std::shared_ptr<vermell::net::StreamOps> stream_ops = nullptr);
 
-    void Dispatch(int notice) const;
+    // Unknown fds (e.g. backend wake fd) are ignored; completions drain first.
+    void dispatch(const std::vector<vermell::net::Event>& events) const;
     void ApplyConfig(const vermell::Config& config);
     void set_pool(const shared_ptr<threading::ThreadPool>& pool);
     void shutdown() const;
