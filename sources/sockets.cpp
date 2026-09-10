@@ -1,11 +1,53 @@
-#include <memory>
-#include <poll.h>
-#include <cerrno>
-#include <sys/uio.h>
+// Core socket facade over the injected vermell::net transport; no <sys/*> here.
 
 #include "../include/vermell/sockets.h"
 
+#include <cerrno>
+#include <string>
+
+#include "../include/vermell/config.hpp"
+
 Engine::Engine(const uint16_t port) : PORT(port) {}
+
+Server::Server(const uint16_t Port) : Engine(Port) {
+}
+
+Server::Server() : Engine(DEFAULT_PORT) {
+}
+
+Server::Server(const uint16_t Port, std::shared_ptr<vermell::net::Platform> platform)
+     : Engine(Port) {
+     set_platform(std::move(platform));
+}
+
+void Server::set_platform(std::shared_ptr<vermell::net::Platform> platform) {
+     if (platform != nullptr && platform->transport != nullptr) {
+          listener_ = platform->transport->create_listener();
+          stream_ops_ = platform->transport->stream_ops();
+     } else {
+          listener_.reset();
+          stream_ops_.reset();
+     }
+}
+
+void Server::ensure_transport() const {
+     if (listener_ != nullptr && stream_ops_ != nullptr)
+          return;
+     try {
+          if (auto platform = vermell::net::default_platform();
+              platform != nullptr && platform->transport != nullptr) {
+               listener_ = platform->transport->create_listener();
+               stream_ops_ = platform->transport->stream_ops();
+          }
+     } catch (...) {
+          listener_.reset();
+          stream_ops_.reset();
+     }
+}
+
+vermell::net::TcpListener* Server::tcp_listener() noexcept {
+     return listener_.get();
+}
 
 int Server::Close() {
      try {
@@ -16,10 +58,16 @@ int Server::Close() {
           const int fd = socket_id;
           socket_id = -1; // invalidate first: a second Close() can never double-close
 
-          if (fd >= 0 && close(fd) < 0) {
-               throw std::range_error("Failed to close socket");
+          ensure_transport();
+          if (listener_ != nullptr && listener_->fd() == fd) {
+               listener_->close();
+               return VER_SOCKET_OK;
           }
-          return VER_SOCKET_OK;
+          if (stream_ops_ != nullptr) {
+               stream_ops_->close_fd(fd);
+               return VER_SOCKET_OK;
+          }
+          return VER_SOCKET_ERROR;
      }
      catch (const std::exception &e) {
           std::cerr << e.what() << '\n';
@@ -84,77 +132,57 @@ void Server::setSessions(int max) {
      }
 }
 
-int Server::setNonblocking(const int& socket_id) {
-        int flags = fcntl(socket_id, F_GETFL, 0);
-        if (flags == -1){
-            return VER_SOCKET_ERROR;
-        }
-        if (fcntl(socket_id, F_SETFL, flags | O_NONBLOCK) < 0){
-            return VER_SOCKET_ERROR;
-        }
-        return VER_SOCKET_OK;
+int Server::setNonblocking(const int& fd) {
+     // Backend-agnostic: some fds (per-backend id namespaces, e.g. Windows)
+     // are only valid through the owning StreamOps, so this may fail there.
+     try {
+          const auto platform = vermell::net::default_platform();
+          const auto ops = (platform != nullptr && platform->transport != nullptr)
+               ? platform->transport->stream_ops() : nullptr;
+          if (ops == nullptr)
+               return VER_SOCKET_ERROR;
+          std::string err;
+          return ops->set_nonblocking(fd, &err) ? VER_SOCKET_OK : VER_SOCKET_ERROR;
+     }
+     catch (...) {
+          return VER_SOCKET_ERROR;
+     }
 }
 
 
 int Server::on() {
      try {
+          ensure_transport();
+          if (listener_ == nullptr || stream_ops_ == nullptr)
+               throw std::range_error("Failed to create socket: no platform transport");
 
-         // A Server can be re-used: drop any stale descriptor first so a
-         // second on() never leaks the previous listening socket.
-         if (socket_id >= 0) {
-              close(socket_id);
-              socket_id = -1;
-         }
-
-         const int fd = socket(DOMAIN, TYPE, PROTOCOL);
-         if (fd < 0) {
-             throw std::range_error("Failed to create domain socket");
-         }
-         socket_id = fd;
-
-         if (setsockopt(socket_id,
-                        SOL_SOCKET,
-                        SO_REUSEADDR,
-                        &*option_mame,
-                        sizeof(*option_mame)) != 0x0) {
-             throw std::range_error("Failed to set socket options");
-         }
-
-         // SO_REUSEPORT is strictly opt-in (Config::reuse_port): with it on,
-         // any same-UID process may bind this port and intercept a share of
-         // the traffic. Off by default.
-         if (reuse_port_
-             && setsockopt(socket_id,
-                           SOL_SOCKET,
-                           SO_REUSEPORT,
-                           &*option_mame,
-                           sizeof(*option_mame)) != 0x0) {
-             throw std::range_error("Failed to set socket options");
-         }
-
-         if(setNonblocking(socket_id) == VER_SOCKET_ERROR)
-             throw std::runtime_error("Failed to set nonblocking");
-
-         address.sin_family = AF_INET;
-         address.sin_addr.s_addr = INADDR_ANY;
-         address.sin_port = htons(PORT);
-
-         if (bind(socket_id, reinterpret_cast<struct sockaddr *>(&address), sizeof(address)) < 0) {
-               throw std::range_error("Failed to bind socket");
+           // Re-used Server: drop any stale descriptor so on() never leaks it.
+           if (socket_id >= 0) {
+               if (listener_->fd() == socket_id)
+                    listener_->close();
+               else
+                    stream_ops_->close_fd(socket_id);
+               socket_id = -1;
           }
+
           const int backlog = (static_sessions != nullptr && *static_sessions > 0)
                                   ? *static_sessions
-                                  : SOMAXCONN;
-          if (listen(socket_id, backlog) < 0x0) {
-               throw std::range_error("Failed to listen on socket");
-           }
+                                  : vermell::kDefaultBacklog;
+          std::string err;
+          if (!listener_->bind_listen(PORT, backlog, reuse_port_, &err))
+               throw std::range_error(std::string("Failed to bind socket") + (err.empty() ? "" : ": " + err));
+          socket_id = listener_->fd();
 
           return VER_SOCKET_OK;
      }
      catch (const std::exception &e) {
           // Never leave a half-open listening socket behind on failure.
-          if (socket_id >= 0) {
-               close(socket_id);
+          if (listener_ != nullptr && socket_id >= 0 && listener_->fd() == socket_id) {
+               listener_->close();
+               socket_id = -1;
+          } else if (socket_id >= 0) {
+               if (stream_ops_ != nullptr)
+                    stream_ops_->close_fd(socket_id);
                socket_id = -1;
           }
           std::cerr << e.what() << '\n';
@@ -166,26 +194,31 @@ void Server::getResponseProcessing() {
     try {
         if (socket_id < 0 || buffer_size == nullptr || *buffer_size <= 0)
             throw std::range_error("response is empty");
+        if (stream_ops_ == nullptr) {
+            ensure_transport();
+            if (stream_ops_ == nullptr)
+                throw std::range_error("response is empty");
+        }
 
         string base;
         vector<char> buffer;
         buffer.resize(static_cast<size_t>(*buffer_size));
 
-        const ssize_t total_bytes = read(socket_id, buffer.data(), buffer.size());
+        const long total_bytes = stream_ops_->recv_some(socket_id, buffer.data(), buffer.size());
         if (total_bytes <= 0)
             throw std::range_error("response is empty");
 
         // Strict '<': reading buffer[total_bytes] would touch one element
         // past the payload (and run off the allocation when the read filled
         // the whole buffer).
-        for (ssize_t it = 0; it < total_bytes; it++) {
-            if (buffer[it] == 0)
+        for (long it = 0; it < total_bytes; it++) {
+            if (buffer[static_cast<size_t>(it)] == 0)
                 break;
-            if(static_cast<int>(buffer[it]) == UnCATCH_ERROR_CH)
+            if(static_cast<int>(buffer[static_cast<size_t>(it)]) == UnCATCH_ERROR_CH)
                 continue;
-            if (buffer[it] == 10)
+            if (buffer[static_cast<size_t>(it)] == 10)
                 continue;
-            base += buffer[it];
+            base += buffer[static_cast<size_t>(it)];
         }
         if(base.empty()) throw std::range_error("response is empty");
         buffereOd_data = make_shared<string>(base);
@@ -214,54 +247,16 @@ void Server::setResponse(string &&data) {
 void Server::sendResponse(const string& head, const string& body) const {
      if (socket_id < 0)
           return;
-
-     const int fd = socket_id;
-     const char* bufs[2] = { head.data(), body.data() };
-     size_t lens[2] = { head.size(), body.size() };
-     size_t done = 0;
-     const size_t total = lens[0] + lens[1];
-
-     while (done < total) {
-          iovec iov[2];
-          int count = 0;
-          for (int i = 0; i < 2; ++i) {
-               if (lens[i] == 0)
-                    continue;
-               iov[count].iov_base = const_cast<char*>(bufs[i]);
-               iov[count].iov_len = lens[i];
-               ++count;
-          }
-
-          msghdr msg{};
-          msg.msg_iov = iov;
-          msg.msg_iovlen = static_cast<size_t>(count);
-
-          const ssize_t bytes_send = sendmsg(fd, &msg, MSG_NOSIGNAL);
-          if (bytes_send > 0) {
-               done += static_cast<size_t>(bytes_send);
-               size_t consumed = static_cast<size_t>(bytes_send);
-               for (int i = 0; i < 2 && consumed > 0; ++i) {
-                    const size_t take = std::min(consumed, lens[i]);
-                    lens[i] -= take;
-                    bufs[i] += take;
-                    consumed -= take;
-               }
-               continue;
-          }
-
-          if (bytes_send == -1 && errno == EINTR)
-               continue;
-
-          if (bytes_send == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-               pollfd pfd{};
-               pfd.fd = fd;
-               pfd.events = POLLOUT;
-
-               if (poll(&pfd, 1, write_timeout_ms) > 0 && (pfd.revents & POLLOUT))
-                    continue;
-          }
-
-          break;
+     if (stream_ops_ == nullptr) {
+          ensure_transport();
+          if (stream_ops_ == nullptr)
+               return;
      }
-}
 
+     // Single-buffer write: join once instead of two partial writes.
+     string wire;
+     wire.reserve(head.size() + body.size());
+     wire.append(head);
+     wire.append(body);
+     stream_ops_->send_all(socket_id, wire.data(), wire.size(), write_timeout_ms, nullptr);
+}
