@@ -7,22 +7,21 @@
 //   - valid_include_name(): strict whitelist for compose() module names.
 //   - escape_html():  safe reflection of names/paths in error pages.
 //
+// The read/stat primitives are delegated to the backend's FileOps.
 
 #ifndef VERMELL_SECURE_RENDER_H
 #define VERMELL_SECURE_RENDER_H
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstdint>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
 #include <system_error>
-#include <unistd.h>
+
+#include "../net/file_ops.h"
 
 namespace vermell::srender {
 
@@ -45,59 +44,23 @@ namespace vermell::srender {
         }
     }
 
-    // Reads a regular file fully, refusing anything that is not a plain
-    // regular file (directories, FIFOs, devices, /proc entries with a
-    // lied-about size are capped by the streaming read below) and anything
-    // larger than max_bytes.
-    //
-    // Opens with O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC and re-checks with
-    // fstat(): a symlink planted between the jail check and the open, a FIFO
-    // or a device can never be served (the O_NONBLOCK open of a FIFO cannot
-    // block waiting for a writer, and fstat rejects anything not S_IFREG).
+    [[nodiscard]] inline ReadErr to_read_err(const vermell::net::FileReadErr err) noexcept {
+        switch (err) {
+            case vermell::net::FileReadErr::NotFound:  return ReadErr::NotFound;
+            case vermell::net::FileReadErr::Forbidden: return ReadErr::Forbidden;
+            case vermell::net::FileReadErr::TooLarge:  return ReadErr::TooLarge;
+            case vermell::net::FileReadErr::IoError:   return ReadErr::IoError;
+            default:                                   return ReadErr::Ok;
+        }
+    }
+
+    // Reads a plain regular file through the backend FileOps (no backend -> 500).
     [[nodiscard]] inline ReadResult read_bounded(const std::string& path, const size_t max_bytes) {
-        const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0)
-            return {ReadErr::NotFound, {}};
-
-        struct stat st{};
-        if (fstat(fd, &st) != 0) {
-            ::close(fd);
+        const auto ops = vermell::net::default_file_ops();
+        if (ops == nullptr)
             return {ReadErr::IoError, {}};
-        }
-        if (!S_ISREG(st.st_mode)) {
-            ::close(fd);
-            return {ReadErr::Forbidden, {}};
-        }
-        if (st.st_size > static_cast<off_t>(max_bytes)) {
-            ::close(fd);
-            return {ReadErr::TooLarge, {}};
-        }
-
-        std::string out;
-        out.reserve(static_cast<size_t>(st.st_size));
-
-        char chunk[16384];
-        size_t total = 0;
-        for (;;) {
-            const ssize_t n = ::read(fd, chunk, sizeof(chunk));
-            if (n < 0) {
-                if (errno == EINTR)
-                    continue;
-                ::close(fd);
-                return {ReadErr::IoError, {}};
-            }
-            if (n == 0)
-                break;
-            total += static_cast<size_t>(n);
-            if (total > max_bytes) { // grew past the cap while being read
-                ::close(fd);
-                return {ReadErr::TooLarge, {}};
-            }
-            out.append(chunk, static_cast<size_t>(n));
-        }
-
-        ::close(fd);
-        return {ReadErr::Ok, std::move(out)};
+        const auto read = ops->read_bounded(path, max_bytes);
+        return {to_read_err(read.err), std::move(read.data)};
     }
 
     // ---------------- jail containment ----------------

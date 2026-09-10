@@ -28,10 +28,10 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <sys/stat.h>
 
 #include "../http/message.hpp"
 #include "../http/response.hpp"
+#include "../net/file_ops.h"
 #include "mime_types.hpp"
 #include "secure_render.h"
 
@@ -104,7 +104,7 @@ namespace vermell {
         // If-None-Match matching: comma list, "*", weak (W/) comparison.
         [[nodiscard]] static bool etag_matches(const std::string_view header,
                                                const std::string_view etag) noexcept;
-        [[nodiscard]] static std::string make_etag(const struct stat& st) noexcept;
+        [[nodiscard]] static std::string make_etag(const vermell::net::FileStat& st) noexcept;
         [[nodiscard]] std::string cache_control_header() const;
         // Reads and answers one resolved file. `spa_fallback` allows the
         // index fallback on NotFound (disabled for the fallback itself, so
@@ -182,11 +182,11 @@ namespace vermell {
         return false;
     }
 
-    inline std::string StaticMount::make_etag(const struct stat& st) noexcept {
+    inline std::string StaticMount::make_etag(const vermell::net::FileStat& st) noexcept {
         // Strong opaque tag from size + mtime (seconds): cheap, stable for
         // the whole life of an unchanged build artifact.
-        return "\"" + std::to_string(static_cast<long long>(st.st_size)) + "-"
-                    + std::to_string(static_cast<long long>(st.st_mtim.tv_sec)) + "\"";
+        return "\"" + std::to_string(st.size) + "-"
+                    + std::to_string(st.mtime_sec) + "\"";
     }
 
     inline std::string StaticMount::cache_control_header() const {
@@ -234,10 +234,12 @@ namespace vermell {
 
         const std::string cache_control = cache_control_header();
         if (options_.cache) {
-            struct stat mst{};
             std::string etag;
-            if (::stat(full.c_str(), &mst) == 0 && S_ISREG(mst.st_mode))
-                etag = make_etag(mst);
+            if (const auto ops = vermell::net::default_file_ops()) {
+                const auto mst = ops->stat(full);
+                if (mst.ok && mst.is_regular)
+                    etag = make_etag(mst);
+            }
             if (!etag.empty() && etag_matches(if_none_match, etag))
                 return respond(304, {}, vermell::mime::of(full), cache_control, etag);
             return respond(200, std::move(read.data), vermell::mime::of(full),
@@ -300,8 +302,11 @@ namespace vermell {
         full += rel;
 
         // Directory (or the mount root): serve the index file instead.
-        struct stat st{};
-        const bool is_dir = ::stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        bool is_dir = false;
+        if (const auto ops = vermell::net::default_file_ops()) {
+            const auto st = ops->stat(full);
+            is_dir = st.ok && st.is_dir;
+        }
         if (is_dir || rel.empty()) {
             if (full.back() != '/')
                 full.push_back('/');
