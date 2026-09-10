@@ -15,17 +15,19 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <sys/socket.h>
 
 #include "util/enums.h"
 #include "util/render_security.h"
 
 namespace vermell {
 
+    // Portable backlog default (SOMAXCONN is OS-specific).
+    inline constexpr int kDefaultBacklog = 511;
+
     struct Config {
         // ---- network ----
         uint16_t port = 0; // listening port; 0 = default/keep current (DEF_PORT)
-        int backlog = SOMAXCONN;                     // pending connections queue of listen()
+        int backlog = kDefaultBacklog;                 // pending connections queue of listen()
         int buffer_size = enums::neo::eSize::BUFFER; // legacy socket buffer size
 
         // ---- request reading ----
@@ -46,7 +48,7 @@ namespace vermell {
         // Bytes read per recv() call.
         size_t read_chunk = 16UL * 1024UL;
 
-        // ---- concurrency / epoll ----
+        // ---- concurrency / event loop ----
         // Worker pool size. 0 = thread-per-core: each accept thread serves its
         // own requests inline (no queue). >0 = offload to a pool of N workers.
         size_t threads = 0;
@@ -54,9 +56,9 @@ namespace vermell {
         // off). 0 = auto (hardware_concurrency) or >1 runs that many loops,
         // each with its own SO_REUSEPORT listener for multi-core accept.
         size_t accept_threads = 1;
-        int max_events = 1024;                       // epoll event batch size
+        int max_events = 1024;                       // event-loop batch size (backend-agnostic)
         // Queued tasks before the dispatcher sheds load. 0 = auto:
-        // max(1024, threads * 256), enough to absorb an epoll batch burst.
+        // max(1024, threads * 256), enough to absorb an event-loop batch burst.
         size_t max_queue_size = 0;
         // Hard cap on simultaneously open client connections. Bounded by
         // default (1024) so a connection flood cannot exhaust memory (each
@@ -70,6 +72,8 @@ namespace vermell {
         // deliberately run several server instances side by side.
         bool reuse_port = false;
         std::chrono::milliseconds epoll_timeout{1000}; // listen loop wake-up period
+        // Historical name; generic event-loop wait timeout. Prefer loop_timeout().
+        [[nodiscard]] std::chrono::milliseconds loop_timeout() const noexcept { return epoll_timeout; }
 
         // ---- file rendering hardening (readFile / compose / render) ----
         RenderSecurity render{};
