@@ -4,6 +4,7 @@
 #include "sockets.h"
 #include "routes.hpp"
 #include "config.hpp"
+#include "net/platform.h"
 #include "request/router_epoll.h"
 #include "util/enums.h"
 #include "util/process.h"
@@ -231,7 +232,7 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
 
     // Bounds for the user-tunable knobs: absurd values are a memory/DoS
     // foot-gun (a per-connection recv() buffer of read_chunk bytes, an
-    // epoll event array of max_events entries, a poll() timeout that
+    // epoll event array of max_events entries, a wait timeout that
     // overflows the int conversion and waits forever).
     // `static` so the lambda below may reference them without captures
     // (portable across GCC/Clang/MSVC).
@@ -378,7 +379,6 @@ void Vermell<T>::applyNetworkConfig() noexcept {
 
 template<class T>
 void Vermell<T>::tcpInt() {
-
     tcpControl = make_shared<T>();
     applyNetworkConfig();
 
