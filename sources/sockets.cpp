@@ -2,6 +2,7 @@
 #include <poll.h>
 #include <cerrno>
 #include <sys/uio.h>
+#include <netinet/tcp.h>
 
 #include "../include/vermell/sockets.h"
 
@@ -112,13 +113,17 @@ int Server::on() {
          }
          socket_id = fd;
 
-         if (setsockopt(socket_id,
-                        SOL_SOCKET,
-                        SO_REUSEADDR,
-                        &*option_mame,
-                        sizeof(*option_mame)) != 0x0) {
-             throw std::range_error("Failed to set socket options");
-         }
+          if (setsockopt(socket_id,
+                         SOL_SOCKET,
+                         SO_REUSEADDR,
+                         &*option_mame,
+                         sizeof(*option_mame)) != 0x0) {
+              throw std::range_error("Failed to set socket options");
+          }
+
+          int nodelay = 1;
+          (void)::setsockopt(socket_id, IPPROTO_TCP, TCP_NODELAY,
+                             &nodelay, static_cast<socklen_t>(sizeof(nodelay)));
 
          // SO_REUSEPORT is strictly opt-in (Config::reuse_port): with it on,
          // any same-UID process may bind this port and intercept a share of
