@@ -16,7 +16,8 @@
  TEST_F(TestSuite, TestBaseOne) {
 
      Router router;
-     router.setPort(8031);
+     const uint16_t port_8031 = free_port();
+     router.setPort(port_8031);
      router.get("/", {[&](Query &http) {
                http.send(expected_default);
        }});
@@ -25,7 +26,7 @@
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8031");
+     Veridic client("http://localhost:" + std::to_string(port_8031));
      const string res = client.get();
      isolate_method.get();
 
@@ -37,7 +38,8 @@
   TEST_F(TestSuite, TestBasePost) {
 
       Router router;
-      router.setPort(8032);
+      const uint16_t port_8032 = free_port();
+      router.setPort(port_8032);
 
       ISOLATE(
            router.post("/", {[&](Query &http) {
@@ -46,7 +48,7 @@
            router.listenOne();
       )
 
-      Veridic client("http://localhost:8032");
+      Veridic client("http://localhost:" + std::to_string(port_8032));
       const string res = client.post();
       isolate_method.get();
 
@@ -59,7 +61,8 @@
  TEST_F(TestSuite, TestCompose) {
 
      Router router;
-     router.setPort(8033);
+     const uint16_t port_8033 = free_port();
+     router.setPort(port_8033);
      // The test binary runs from the build dir: jail to the repo root so the
      // "../examples/..." fixtures stay inside the jail.
      router.configure({ .render = { .root = ".." } });
@@ -73,7 +76,7 @@
             router.listenOne();
      )
 
-     Veridic client("http://localhost:8033");
+     Veridic client("http://localhost:" + std::to_string(port_8033));
      const string res = client.get();
      isolate_method.get();
 
@@ -85,7 +88,8 @@
 TEST_F(TestSuite, TestReadFile) {
 
     Router router;
-    router.setPort(8034);
+    const uint16_t port_8034 = free_port();
+    router.setPort(port_8034);
     // Jail to the repo root: the fixture lives in ../examples.
     router.configure({ .render = { .root = ".." } });
     const string file = "../examples/files/test.json";
@@ -97,7 +101,7 @@ TEST_F(TestSuite, TestReadFile) {
            router.listenOne();
     )
 
-     Veridic client("http://localhost:8034");
+     Veridic client("http://localhost:" + std::to_string(port_8034));
      const string response = client.get();
     isolate_method.get();
 
@@ -107,7 +111,8 @@ TEST_F(TestSuite, TestReadFile) {
  TEST_F(TestSuite, TestHeaders) {
 
      Router router;
-     router.setPort(8035);
+     const uint16_t port_8035 = free_port();
+     router.setPort(port_8035);
      const string file = "../examples/files/cpp.html";
 
      router.get("/", {[&](Query &http) {
@@ -130,7 +135,7 @@ TEST_F(TestSuite, TestReadFile) {
       "header-1: valueX"
      };
 
-     Veridic client("http://localhost:8035");
+     Veridic client("http://localhost:" + std::to_string(port_8035));
      const string res = client.get(my_headers);
      isolate_method.get();
 
@@ -141,7 +146,8 @@ TEST_F(TestSuite, TestReadFile) {
  TEST_F(TestSuite, TestMiddleware) {
 
      Router router;
-     router.setPort(8036);
+     const uint16_t port_8036 = free_port();
+     router.setPort(port_8036);
 
      router.post("/", {
 
@@ -157,7 +163,7 @@ TEST_F(TestSuite, TestReadFile) {
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8036");
+     Veridic client("http://localhost:" + std::to_string(port_8036));
      const string res = client.post();
      isolate_method.get();
      EXPECT_TRUE(expected_default == res);
@@ -168,7 +174,8 @@ TEST_F(TestSuite, TestReadFile) {
 TEST_F(TestSuite, TestParametersQuery) {
 
      Router router;
-     router.setPort(8037);
+     const uint16_t port_8037 = free_port();
+     router.setPort(port_8037);
 
      router.get("/",{[&](Query &web) {
 
@@ -187,7 +194,7 @@ TEST_F(TestSuite, TestParametersQuery) {
        router.listenOne();
      )
 
-     Veridic client("http://localhost:8037");
+     Veridic client("http://localhost:" + std::to_string(port_8037));
      const string res = client.get("/?id=2");
      isolate_method.get();
 
@@ -200,7 +207,8 @@ TEST_F(TestSuite, TestParametersQuery) {
 TEST_F(TestSuite, TestParametersPost) {
 
      Router router;
-     router.setPort(8038);
+     const uint16_t port_8038 = free_port();
+     router.setPort(port_8038);
 
      router.post("/",{[&](Query &web) {
 
@@ -223,7 +231,7 @@ TEST_F(TestSuite, TestParametersPost) {
         "id=2"
      };
 
-     Veridic client("http://localhost:8038");
+     Veridic client("http://localhost:" + std::to_string(port_8038));
      const string res = client.post(fields,"/");
      neosys::process::writeFile("./kevin.res.txt", res);
      isolate_method.get();
@@ -235,7 +243,8 @@ TEST_F(TestSuite, TestParametersPost) {
 TEST_F(TestSuite, TestQueryDecoding) {
 
      Router router;
-     router.setPort(8039);
+     const uint16_t port_8039 = free_port();
+     router.setPort(port_8039);
 
      router.get("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -245,7 +254,7 @@ TEST_F(TestSuite, TestQueryDecoding) {
        router.listenOne();
      )
 
-     Veridic client("http://localhost:8039");
+     Veridic client("http://localhost:" + std::to_string(port_8039));
      const string res = client.get("/?name=hello%20world+vermell");
      isolate_method.get();
 
@@ -256,7 +265,8 @@ TEST_F(TestSuite, TestQueryDecoding) {
 TEST_F(TestSuite, TestTypedParameter) {
 
      Router router;
-     router.setPort(8040);
+     const uint16_t port_8040 = free_port();
+     router.setPort(port_8040);
 
      router.get("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -266,7 +276,7 @@ TEST_F(TestSuite, TestTypedParameter) {
        router.listenOne();
      )
 
-     Veridic client("http://localhost:8040");
+     Veridic client("http://localhost:" + std::to_string(port_8040));
      const string res = client.get("/?id=21");
      isolate_method.get();
 
@@ -277,7 +287,8 @@ TEST_F(TestSuite, TestTypedParameter) {
 TEST_F(TestSuite, TestJsonBody) {
 
      Router router;
-     router.setPort(8041);
+     const uint16_t port_8041 = free_port();
+     router.setPort(port_8041);
 
      router.post("/",{[&](Query &web) {
        const string legacy_data = web.body.getParameters().get("data").value;
@@ -291,7 +302,7 @@ TEST_F(TestSuite, TestJsonBody) {
      POST fields = { json_body };
      VHeaders hdrs = { "Content-Type: application/json" };
 
-     Veridic client("http://localhost:8041");
+     Veridic client("http://localhost:" + std::to_string(port_8041));
      const string res = client.post(fields, hdrs, "/");
      isolate_method.get();
 
@@ -302,7 +313,8 @@ TEST_F(TestSuite, TestJsonBody) {
 TEST_F(TestSuite, TestMultipartForm) {
 
      Router router;
-     router.setPort(8042);
+     const uint16_t port_8042 = free_port();
+     router.setPort(port_8042);
 
      router.post("/",{[&](Query &web) {
        auto params = web.body.getParameters();
@@ -329,7 +341,7 @@ TEST_F(TestSuite, TestMultipartForm) {
      POST fields = { multipart_body };
      VHeaders hdrs = { "Content-Type: multipart/form-data; boundary=----vermellTestBoundary" };
 
-     Veridic client("http://localhost:8042");
+     Veridic client("http://localhost:" + std::to_string(port_8042));
      const string res = client.post(fields, hdrs, "/");
      isolate_method.get();
 
@@ -404,7 +416,8 @@ TEST(ThreadPoolBackpressureTest, BlocksWhenQueueIsFullWithoutDroppingWork) {
 TEST_F(TestSuite, TestConfigPayloadTooLarge) {
 
      Router router;
-     router.setPort(8043);
+     const uint16_t port_8043 = free_port();
+     router.setPort(port_8043);
 
      // Any complete HTTP request is bigger than this: reject with 413.
      router.configure({
@@ -420,7 +433,7 @@ TEST_F(TestSuite, TestConfigPayloadTooLarge) {
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8043");
+     Veridic client("http://localhost:" + std::to_string(port_8043));
      const string res = client.get();
      isolate_method.get();
 
@@ -431,7 +444,8 @@ TEST_F(TestSuite, TestConfigPayloadTooLarge) {
 TEST_F(TestSuite, TestConfigureKeepsFlow) {
 
      Router router;
-     router.setPort(8044);
+     const uint16_t port_8044 = free_port();
+     router.setPort(port_8044);
 
      router.configure({
          .read_timeout     = std::chrono::seconds{10},
@@ -451,12 +465,12 @@ TEST_F(TestSuite, TestConfigureKeepsFlow) {
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8044");
+     Veridic client("http://localhost:" + std::to_string(port_8044));
      const string res = client.get();
      isolate_method.get();
 
      EXPECT_EQ(expected_default, res);
-     EXPECT_EQ(router.config().port, 8044);
+     EXPECT_EQ(router.config().port, port_8044);
      EXPECT_EQ(router.config().threads, 2UL);
      EXPECT_EQ(router.config().max_queue_size, 64UL);
      EXPECT_EQ(router.config().max_request_size, 8UL * 1024UL * 1024UL);
@@ -577,7 +591,8 @@ TEST_F(TestSuite, TestReadFileJailOverHttp) {
      { std::ofstream out(file); out << "{\"ok\":true}"; }
 
      Router router;
-     router.setPort(8096);
+     const uint16_t port_8096 = free_port();
+     router.setPort(port_8096);
      router.configure({
          .render = { .root = "." }, // jail everything to the CWD
      });
@@ -589,14 +604,15 @@ TEST_F(TestSuite, TestReadFileJailOverHttp) {
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8096");
+     Veridic client("http://localhost:" + std::to_string(port_8096));
      const string blocked = client.get();
      isolate_method.get();
      EXPECT_EQ(blocked.find("root:"), string::npos);
 
      // Same jail, a file inside it is still served.
      Router router2;
-     router2.setPort(8097);
+     const uint16_t port_8097 = free_port();
+     router2.setPort(port_8097);
      router2.configure({
          .render = { .root = "." },
      });
@@ -604,7 +620,7 @@ TEST_F(TestSuite, TestReadFileJailOverHttp) {
                 http.readFile(file, "application/json");
        }});
 
-     Veridic client2("http://localhost:8097");
+     Veridic client2("http://localhost:" + std::to_string(port_8097));
      std::future<void> second = std::async(std::launch::async, [&] { router2.listenOne(); });
      const string ok = client2.get();
      second.get();
@@ -619,7 +635,8 @@ TEST_F(TestSuite, TestComposeTraversalOverHttp) {
      { std::ofstream out(file); out << "<p>#[../../../etc/passwd];</p>"; }
 
      Router router;
-     router.setPort(8098);
+     const uint16_t port_8098 = free_port();
+     router.setPort(port_8098);
      router.get("/", {[&](Query &http) {
                 http.compose(file, 1);
        }});
@@ -628,7 +645,7 @@ TEST_F(TestSuite, TestComposeTraversalOverHttp) {
           router.listenOne();
      )
 
-     Veridic client("http://localhost:8098");
+     Veridic client("http://localhost:" + std::to_string(port_8098));
      const string res = client.get();
      isolate_method.get();
 
@@ -757,7 +774,8 @@ TEST(JsonUnit, LegacyJsonSIsSafeNow) {
  TEST_F(TestSuite, TestJsonDomOverHttp) {
 
       Router router;
-      router.setPort(8099);
+      const uint16_t port_8099 = free_port();
+      router.setPort(port_8099);
 
       router.post("/", {[&](Query &http) {
          const auto body = vermell::Json::parse(http.body.raw());
@@ -774,7 +792,7 @@ TEST(JsonUnit, LegacyJsonSIsSafeNow) {
            router.listenOne();
       )
 
-      Veridic client("http://localhost:8099");
+      Veridic client("http://localhost:" + std::to_string(port_8099));
       POST fields = { R"({"a": 21})" };
       VHeaders hdrs = { "Content-Type: application/json" };
 
@@ -991,11 +1009,12 @@ static string raw_exchange(const uint16_t port, const string& bytes) {
 
 TEST_F(TestSuite, TestConflictingContentLengthRejected) {
      Router router;
-     router.setPort(8100);
+     const uint16_t port_8100 = free_port();
+     router.setPort(port_8100);
      router.post("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8100, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n");
+     const string res = raw_exchange(port_8100, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1003,11 +1022,12 @@ TEST_F(TestSuite, TestConflictingContentLengthRejected) {
 
 TEST_F(TestSuite, TestTransferEncodingRejected) {
      Router router;
-     router.setPort(8101);
+     const uint16_t port_8101 = free_port();
+     router.setPort(port_8101);
      router.post("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8101, "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+     const string res = raw_exchange(port_8101, "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 501 Not Implemented"), string::npos);
@@ -1015,7 +1035,8 @@ TEST_F(TestSuite, TestTransferEncodingRejected) {
 
 TEST_F(TestSuite, TestTooManyHeadersRejected) {
      Router router;
-     router.setPort(8102);
+     const uint16_t port_8102 = free_port();
+     router.setPort(port_8102);
      router.get("/", {[&](Query &http) { http.send("unreachable"); }});
 
      string wire = "GET / HTTP/1.1\r\n";
@@ -1024,7 +1045,7 @@ TEST_F(TestSuite, TestTooManyHeadersRejected) {
      wire += "\r\n";
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8102, wire);
+     const string res = raw_exchange(port_8102, wire);
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 431 Request Header Fields Too Large"), string::npos);
@@ -1032,11 +1053,12 @@ TEST_F(TestSuite, TestTooManyHeadersRejected) {
 
 TEST_F(TestSuite, TestMalformedRequestLineIsNotA404) {
      Router router;
-     router.setPort(8103);
+     const uint16_t port_8103 = free_port();
+     router.setPort(port_8103);
      router.get("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8103, "GARBAGE\r\n\r\n");
+     const string res = raw_exchange(port_8103, "GARBAGE\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1045,12 +1067,13 @@ TEST_F(TestSuite, TestMalformedRequestLineIsNotA404) {
 
 TEST_F(TestSuite, TestIncompleteBodyRejected) {
      Router router;
-     router.setPort(8104);
+     const uint16_t port_8104 = free_port();
+     router.setPort(port_8104);
      router.post("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
      // Promises 100 bytes, sends 5 and closes: not "whatever arrived".
-     const string res = raw_exchange(8104, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nshort");
+     const string res = raw_exchange(port_8104, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nshort");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1058,12 +1081,13 @@ TEST_F(TestSuite, TestIncompleteBodyRejected) {
 
 TEST_F(TestSuite, TestHugeDeclaredBodyRejectedEarly) {
      Router router;
-     router.setPort(8105);
+     const uint16_t port_8105 = free_port();
+     router.setPort(port_8105);
      router.post("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
      // 10 GiB announced, nothing sent: rejected from the head alone.
-     const string res = raw_exchange(8105, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10737418240\r\n\r\n");
+     const string res = raw_exchange(port_8105, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10737418240\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 413"), string::npos);
@@ -1071,11 +1095,12 @@ TEST_F(TestSuite, TestHugeDeclaredBodyRejectedEarly) {
 
 TEST_F(TestSuite, TestDuplicateContentLengthAccepted) {
      Router router;
-     router.setPort(8106);
+     const uint16_t port_8106 = free_port();
+     router.setPort(port_8106);
      router.post("/", {[&](Query &http) { http.send(http.body.raw()); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8106, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\npong");
+     const string res = raw_exchange(port_8106, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\npong");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
@@ -1084,11 +1109,12 @@ TEST_F(TestSuite, TestDuplicateContentLengthAccepted) {
 
 TEST_F(TestSuite, TestGarbageAfterHeadIsNotBody) {
      Router router;
-     router.setPort(8107);
+     const uint16_t port_8107 = free_port();
+     router.setPort(port_8107);
      router.get("/", {[&](Query &http) { http.send(http.body.raw().empty() ? "empty" : "leaked"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8107, "GET / HTTP/1.1\r\nHost: x\r\n\r\nGARBAGE");
+     const string res = raw_exchange(port_8107, "GET / HTTP/1.1\r\nHost: x\r\n\r\nGARBAGE");
      isolate_method.get();
 
      EXPECT_TRUE(res.ends_with("empty"));
@@ -1198,12 +1224,13 @@ TEST(SecurityRegression, HttpQueryTrimKeepsInnerWhitespace) {
 
 TEST_F(TestSuite, TestMissingHostRejectedOverHttp) {
      Router router;
-     router.setPort(8112);
+     const uint16_t port_8112 = free_port();
+     router.setPort(port_8112);
      router.setReusePort(true);
      router.get("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8112, "GET / HTTP/1.1\r\n\r\n");
+     const string res = raw_exchange(port_8112, "GET / HTTP/1.1\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1211,12 +1238,13 @@ TEST_F(TestSuite, TestMissingHostRejectedOverHttp) {
 
 TEST_F(TestSuite, TestDuplicateHostRejectedOverHttp) {
      Router router;
-     router.setPort(8113);
+     const uint16_t port_8113 = free_port();
+     router.setPort(port_8113);
      router.setReusePort(true);
      router.get("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8113, "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
+     const string res = raw_exchange(port_8113, "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1300,11 +1328,12 @@ TEST(SecureRenderUnit, EffectiveRootHonorsConfiguredJail) {
 
 TEST_F(TestSuite, TestBareLfRejectedOverHttp) {
      Router router;
-     router.setPort(8114);
+     const uint16_t port_8114 = free_port();
+     router.setPort(port_8114);
      router.get("/", {[&](Query &http) { http.send("unreachable"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8114, "GET / HTTP/1.1\nHost: x\n\n");
+     const string res = raw_exchange(port_8114, "GET / HTTP/1.1\nHost: x\n\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
@@ -1341,11 +1370,12 @@ TEST_F(TestSuite, TestStaticIndexServed) {
      // GET / resolves to dist/index.html with the right MIME, cache headers
      // and an ETag.
      Router router;
-     router.setPort(8120);
+     const uint16_t port_8120 = free_port();
+     router.setPort(port_8120);
      router.staticX("/", "../examples/static/dist", { .max_age = std::chrono::seconds{60} });
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8120, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8120, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
@@ -1357,11 +1387,12 @@ TEST_F(TestSuite, TestStaticIndexServed) {
 
 TEST_F(TestSuite, TestStaticAssetServedWithMime) {
      Router router;
-     router.setPort(8121);
+     const uint16_t port_8121 = free_port();
+     router.setPort(port_8121);
      router.staticX("/", "../examples/static/dist");
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8121, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8121, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
@@ -1375,11 +1406,12 @@ TEST_F(TestSuite, TestStaticDirectoryIndex) {
      // A directory path serves its own index.html: /blog/ -> blog/index.html
      // (the parser strips the trailing slash, the mount resolves the dir).
      Router router;
-     router.setPort(8122);
+     const uint16_t port_8122 = free_port();
+     router.setPort(port_8122);
      router.staticX("/", "../examples/static/dist");
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8122, "GET /blog/ HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8122, "GET /blog/ HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
@@ -1390,11 +1422,12 @@ TEST_F(TestSuite, TestStaticSpaFallback) {
      // spa=true: an unknown client-side route answers index.html (Vue/React/
      // Angular deep links), never a 404.
      Router router;
-     router.setPort(8123);
+     const uint16_t port_8123 = free_port();
+     router.setPort(port_8123);
      router.staticX("/", "../examples/static/dist", { .spa = true });
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8123, "GET /some/client/route HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8123, "GET /some/client/route HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
@@ -1404,11 +1437,12 @@ TEST_F(TestSuite, TestStaticSpaFallback) {
 TEST_F(TestSuite, TestStaticMissingFileIs404WithoutSpa) {
      // Default (spa=false): a missing asset is a 404, never silently HTML.
      Router router;
-     router.setPort(8124);
+     const uint16_t port_8124 = free_port();
+     router.setPort(port_8124);
      router.staticX("/", "../examples/static/dist");
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8124, "GET /missing.png HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8124, "GET /missing.png HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("HTTP/1.1 404 Not Found"), string::npos);
@@ -1419,11 +1453,12 @@ TEST_F(TestSuite, TestStaticTraversalRejected) {
      // Percent-encoded ".." must never escape the mount directory, and the
      // decoded NUL byte must never reach the filesystem.
      Router router;
-     router.setPort(8125);
+     const uint16_t port_8125 = free_port();
+     router.setPort(port_8125);
      router.staticX("/", "../examples/static/dist");
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8125,
+     const string res = raw_exchange(port_8125,
          "GET /%2e%2e/README.md HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
@@ -1438,11 +1473,12 @@ TEST_F(TestSuite, TestStaticNotModified) {
      string etag;
      {
          Router router;
-         router.setPort(8126);
+         const uint16_t port_8126 = free_port();
+         router.setPort(port_8126);
          router.staticX("/", "../examples/static/dist");
 
          ISOLATE( router.listenOne(); )
-         const string first = raw_exchange(8126, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
+         const string first = raw_exchange(port_8126, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
          isolate_method.get();
 
          const size_t etag_pos = first.find("ETag: ");
@@ -1452,11 +1488,12 @@ TEST_F(TestSuite, TestStaticNotModified) {
      }
 
      Router router2;
-     router2.setPort(8127);
+     const uint16_t port_8127 = free_port();
+     router2.setPort(port_8127);
      router2.staticX("/", "../examples/static/dist");
 
      ISOLATE( router2.listenOne(); )
-     const string second = raw_exchange(8127,
+     const string second = raw_exchange(port_8127,
          "GET /assets/app.js HTTP/1.1\r\nHost: x\r\nIf-None-Match: " + etag + "\r\n\r\n");
      isolate_method.get();
 
@@ -1468,12 +1505,13 @@ TEST_F(TestSuite, TestStaticNotModified) {
 TEST_F(TestSuite, TestStaticExplicitRouteWins) {
      // Explicit routes always take precedence over static mounts.
      Router router;
-     router.setPort(8128);
+     const uint16_t port_8128 = free_port();
+     router.setPort(port_8128);
      router.staticX("/", "../examples/static/dist");
      router.get("/", {[&](Query &web) { web.send("API ROOT"); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(8128, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string res = raw_exchange(port_8128, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
 
      EXPECT_NE(res.find("API ROOT"), string::npos);
@@ -1486,7 +1524,8 @@ TEST_F(TestSuite, TestStaticMostSpecificMountWins) {
      // first: /assets/* belongs to the /assets directory.
      {
          Router router;
-         router.setPort(8131);
+         const uint16_t port_8131 = free_port();
+         router.setPort(port_8131);
          router.staticX("/", "../examples/static/dist", { .spa = true });
          router.staticX("/assets", "../examples/static/public/assets");
 
@@ -1494,7 +1533,7 @@ TEST_F(TestSuite, TestStaticMostSpecificMountWins) {
          // /assets mount answers 404 (its spa is off) — never the root
          // mount's index.html fallback.
          ISOLATE( router.listenOne(); )
-         const string res = raw_exchange(8131, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
+         const string res = raw_exchange(port_8131, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
          isolate_method.get();
          EXPECT_NE(res.find("HTTP/1.1 404 Not Found"), string::npos);
          EXPECT_EQ(res.find("Vermell static"), string::npos);
@@ -1504,12 +1543,13 @@ TEST_F(TestSuite, TestStaticMostSpecificMountWins) {
          // Files that DO live in public/assets are served by the /assets
          // mount, not by a same-named file under the root's dist.
          Router router2;
-         router2.setPort(8132);
+         const uint16_t port_8132 = free_port();
+         router2.setPort(port_8132);
          router2.staticX("/", "../examples/static/dist", { .spa = true });
          router2.staticX("/assets", "../examples/static/public/assets");
 
          ISOLATE( router2.listenOne(); )
-         const string txt = raw_exchange(8132, "GET /assets/readme.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+         const string txt = raw_exchange(port_8132, "GET /assets/readme.txt HTTP/1.1\r\nHost: x\r\n\r\n");
          isolate_method.get();
          EXPECT_NE(txt.find("HTTP/1.1 200 OK"), string::npos);
          EXPECT_NE(txt.find("classic mount fixture"), string::npos);
@@ -1521,22 +1561,24 @@ TEST_F(TestSuite, TestStaticPrefixMount) {
      // it stay 404 (the generic route-level 404, not a static response).
      {
          Router router;
-         router.setPort(8129);
+         const uint16_t port_8129 = free_port();
+         router.setPort(port_8129);
          router.staticX("/assets", "../examples/static/dist/assets");
 
          ISOLATE( router.listenOne(); )
-         const string inside = raw_exchange(8129, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
+         const string inside = raw_exchange(port_8129, "GET /assets/app.js HTTP/1.1\r\nHost: x\r\n\r\n");
          isolate_method.get();
          EXPECT_NE(inside.find("HTTP/1.1 200 OK"), string::npos);
          EXPECT_NE(inside.find("console.log"), string::npos);
      }
 
      Router router2;
-     router2.setPort(8130);
+     const uint16_t port_8130 = free_port();
+     router2.setPort(port_8130);
      router2.staticX("/assets", "../examples/static/dist/assets");
 
      ISOLATE( router2.listenOne(); )
-     const string outside = raw_exchange(8130, "GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n");
+     const string outside = raw_exchange(port_8130, "GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n");
      isolate_method.get();
      EXPECT_NE(outside.find("HTTP/1.1 404 Not Found"), string::npos);
      EXPECT_NE(outside.find("not defined"), string::npos); // generic route 404

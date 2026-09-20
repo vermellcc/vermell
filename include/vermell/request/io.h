@@ -11,6 +11,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <cstdint>
 
 #include "../util/enums.h"
 #include "../util/parameter_proccess.h"
@@ -73,6 +74,7 @@ class RequestIO {
     mutable int notify_fd_ = -1;
     mutable std::mutex completed_mutex_;
     mutable std::vector<Completion> completed_;
+    mutable std::atomic<uint64_t> pending_notify_{0};
 
     [[nodiscard]] bool has_pending(const int fd) const noexcept {
         return fd >= 0 && static_cast<size_t>(fd) < pending_.size()
@@ -101,6 +103,7 @@ class RequestIO {
     bool serve_inline(int fd, std::string raw) const;
     void DrainCompletions() const;
     void RearmConnection(int fd) const;
+    void rearm_wait(int fd) const;
     void complete_connection(int fd, bool keep_alive) const;
 
     public:

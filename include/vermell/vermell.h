@@ -56,33 +56,16 @@ public:
     int purge(const string& route,  const MiddlewareList& middlewares);
 
     int use(const Route_t&);
-
-    // ---- static directories (Node's express.static equivalent) ----
-
-    // Mounts a disk directory at a URL prefix: every GET/HEAD under `mount`
-    // is served from `dir` — a Vue/React/Angular dist folder works out of
-    // the box. Explicit routes always win over static mounts, and the most
-    // specific matching mount answers (a "/assets" mount beats a root "/"
-    // mount for "/assets/..."; ties by registration order). Register before
-    // listen().
-    //
-    //   router.staticX("/", "./dist", { .spa = true });          // SPA dist
-    //   router.staticX("/assets", "./public/assets");            // classic
-    //
-    // `static` is a C++ keyword, hence the X suffix (like `deleteX`).
     Vermell& staticX(const std::string& mount, const std::string& dir,
                      const vermell::StaticOptions& options = {}) noexcept;
 
-    // ---- server configuration ----
 
-    // Replaces the whole configuration (designated initializers recommended):
     //   router.configure({ .max_request_size = 64UL*1024*1024, .threads = 8 });
     Vermell& configure(const vermell::Config& config) noexcept;
     [[nodiscard]] const vermell::Config& config() const noexcept { return config_; }
 
     Vermell& setReadTimeout(std::chrono::milliseconds timeout) noexcept;
     Vermell& setWriteTimeout(std::chrono::milliseconds timeout) noexcept;
-    // Total wall-clock budget for a whole request to arrive (slowloris cure).
     Vermell& setRequestTimeout(std::chrono::milliseconds timeout) noexcept;
     Vermell& setMaxRequestSize(size_t bytes) noexcept;
     Vermell& setReadChunkSize(size_t bytes) noexcept;
@@ -93,8 +76,6 @@ public:
     Vermell& setMaxConnections(size_t max_connections) noexcept;
     Vermell& setBacklog(int backlog) noexcept;
     Vermell& setBufferSize(int size) noexcept;
-    // SO_REUSEPORT is off by default; enable it only for deliberate
-    // multi-instance setups (see Config::reuse_port).
     Vermell& setReusePort(bool reuse_port) noexcept;
 
     int setPort(uint16_t) noexcept;
@@ -229,12 +210,6 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
     if (config_.port < static_cast<uint16_t>(neo::MIN_PORT))
         config_.port = previous_port;
 
-    // Bounds for the user-tunable knobs: absurd values are a memory/DoS
-    // foot-gun (a per-connection recv() buffer of read_chunk bytes, an
-    // epoll event array of max_events entries, a poll() timeout that
-    // overflows the int conversion and waits forever).
-    // `static` so the lambda below may reference them without captures
-    // (portable across GCC/Clang/MSVC).
     static constexpr size_t MAX_READ_CHUNK = 1UL << 20; // 1 MiB per recv() call
     static constexpr int    MAX_EVENTS     = 65536;
     static constexpr size_t MAX_THREADS    = 256;
@@ -263,8 +238,6 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
     config_.epoll_timeout   = clamp_ms(config_.epoll_timeout);
 
     applyNetworkConfig();
-    // Push the new values into a running server (RequestIO swaps them
-    // atomically); no-op before listen().
     if (router_epoll != nullptr)
         router_epoll->applyConfig(config_);
     return *this;
@@ -272,8 +245,10 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
 
 template <class T>
 Vermell<T>& Vermell<T>::setReadTimeout(const std::chrono::milliseconds timeout) noexcept {
+
     // poll() takes an int: clamp so a 0/negative value cannot mean
     // "wait forever" (slow-client DoS) and a huge one cannot overflow.
+
     const long long ms = timeout.count();
     config_.read_timeout = std::chrono::milliseconds(
         ms < 1 ? 1 : (ms > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max() : ms));

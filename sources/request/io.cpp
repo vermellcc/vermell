@@ -4,7 +4,6 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
-#include <netinet/tcp.h>
 #include <sys/uio.h>
 
 namespace {
@@ -99,7 +98,6 @@ void RequestIO::Dispatch(const int notice) const {
             if (event_mask & EPOLLIN)
                 HandleReadable(event_fd);
             if (has_pending(event_fd)) {
-                epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, event_fd, nullptr);
                 close(event_fd);
                 drop_pending(event_fd);
                 active_connections_.fetch_sub(1);
@@ -122,9 +120,10 @@ void RequestIO::AcceptPending() const {
         sockaddr_in client_addr{};
         socklen_t client_addr_len = sizeof(client_addr);
 
-        const int client_file_descriptor = accept(*file_descriptor,
-                                                  reinterpret_cast<sockaddr *>(&client_addr),
-                                                  &client_addr_len);
+        const int client_file_descriptor = accept4(*file_descriptor,
+                                                   reinterpret_cast<sockaddr *>(&client_addr),
+                                                   &client_addr_len,
+                                                   SOCK_NONBLOCK | SOCK_CLOEXEC);
 
         if (client_file_descriptor == VER_NVALUE) {
             if (errno == EINTR)
@@ -141,17 +140,10 @@ void RequestIO::AcceptPending() const {
             continue;
         }
 
-        if (Server::setNonblocking(client_file_descriptor) == VER_SOCKET_ERROR) {
-            close(client_file_descriptor);
-            continue;
-        }
-
-        int nodelay = 1;
-        (void)::setsockopt(client_file_descriptor, IPPROTO_TCP, TCP_NODELAY,
-                           &nodelay, static_cast<socklen_t>(sizeof(nodelay)));
-
         epoll_event client_event{};
         client_event.events = EPOLLIN;
+        if (thread_pool_)
+            client_event.events |= EPOLLONESHOT;
         client_event.data.fd = client_file_descriptor;
 
         if (epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, client_file_descriptor, &client_event) == VER_NVALUE) {
@@ -196,6 +188,8 @@ void RequestIO::HandleReadable(const int fd) const {
                 Reject(fd, 413, "payload too large");
                 return;
             }
+            if (static_cast<size_t>(bytes) < bufsz)
+                break;
             continue;
         }
         if (bytes == 0) {
@@ -211,6 +205,7 @@ void RequestIO::HandleReadable(const int fd) const {
     }
 
     if (st.buffer.empty()) {
+        rearm_wait(fd);
         return;
     }
 
@@ -231,6 +226,7 @@ void RequestIO::HandleReadable(const int fd) const {
                     Reject(fd, 408, "request timeout");
                     return;
                 }
+                rearm_wait(fd);
                 return;
             }
             request_len = st.expected;
@@ -252,6 +248,7 @@ void RequestIO::HandleReadable(const int fd) const {
                         Reject(fd, 408, "request timeout");
                         return;
                     }
+                    rearm_wait(fd);
                     return;
                 }
                 case vermell::http::Message::Framing::Complete:
@@ -281,7 +278,6 @@ void RequestIO::HandleReadable(const int fd) const {
 
         if (!thread_pool_) {
             if (!serve_inline(fd, std::move(raw))) {
-                epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                 close(fd);
                 drop_pending(fd);
                 active_connections_.fetch_sub(1);
@@ -290,7 +286,6 @@ void RequestIO::HandleReadable(const int fd) const {
             continue;
         }
 
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
         if (!st.buffer.empty())
             st.dispatching = true;
         else
@@ -298,6 +293,8 @@ void RequestIO::HandleReadable(const int fd) const {
         DispatchTask(fd, std::move(raw));
         return;
     }
+
+    rearm_wait(fd);
 
     const auto finish = std::chrono::steady_clock::now();
     st.start = finish;
@@ -327,7 +324,6 @@ void RequestIO::SweepStale() const {
             continue;
 
         const int fd = static_cast<int>(i);
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
         send_best_effort(fd, error_response(408, "request timeout"));
         close(fd);
         active_connections_.fetch_sub(1);
@@ -360,7 +356,6 @@ void RequestIO::DispatchTask(const int fd, std::string raw) const {
 
 
 void RequestIO::Reject(const int fd, const int code, const char* error) const {
-    epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
     send_best_effort(fd, error_response(code, error));
     close(fd);
     drop_pending(fd);
@@ -399,7 +394,10 @@ bool RequestIO::serve_inline(const int fd, std::string raw) const {
 
 void RequestIO::DrainCompletions() const {
     uint64_t counter;
-    while (::read(notify_fd_, &counter, sizeof counter) > 0) {}
+    const ssize_t drained = ::read(notify_fd_, &counter, sizeof counter);
+    (void)drained;
+
+    pending_notify_.store(0, std::memory_order_release);
 
     std::vector<Completion> done;
     {
@@ -428,12 +426,23 @@ void RequestIO::RearmConnection(const int fd) const {
     st.dispatching = false;
 
     epoll_event ev{};
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLONESHOT;
     ev.data.fd = fd;
-    epoll_ctl(*epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    epoll_ctl(*epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 
     if (!st.buffer.empty())
         HandleReadable(fd);
+}
+
+
+void RequestIO::rearm_wait(const int fd) const {
+    if (!thread_pool_)
+        return;
+
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLONESHOT;
+    ev.data.fd = fd;
+    epoll_ctl(*epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 }
 
 
@@ -442,9 +451,11 @@ void RequestIO::complete_connection(const int fd, const bool keep_alive) const {
         std::lock_guard<std::mutex> lock(completed_mutex_);
         completed_.push_back({fd, keep_alive});
     }
-    const uint64_t one = 1;
-    const ssize_t written = ::write(notify_fd_, &one, sizeof one);
-    (void)written;
+    if (pending_notify_.fetch_add(1, std::memory_order_acq_rel) == 0) {
+        const uint64_t one = 1;
+        const ssize_t written = ::write(notify_fd_, &one, sizeof one);
+        (void)written;
+    }
 }
 
 
@@ -467,7 +478,6 @@ void RequestIO::shutdown() const {
         if (!pending_[i].has_value())
             continue;
         const int fd = static_cast<int>(i);
-        epoll_ctl(*epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
         close(fd);
         active_connections_.fetch_sub(1);
     }
