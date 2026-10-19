@@ -7,6 +7,8 @@
 #include<string>
 #include<utility>
 #include<vector>
+#include<chrono>
+#include<thread>
 #define PUT_TYPE "PUT"
 #define POST_t "POST"
 #define DELETE_TYPE "DELETE"
@@ -20,7 +22,7 @@ template<typename A,class...L>struct VH{vector<L...>l;VH(std::initializer_list<L
 using VHeaders=VH<string,string>;
 template<typename A,class...L>struct F{vector<L...>l;F(std::initializer_list<L...>a):l(a){}string t(){string d;size_t n=l.size();for(size_t i=0;i<n;i++){if(i)d+='&';d+=l[i];}return d;}};
 typedef F<string,string>POST,PUT,GET,DELETE;
-class HTTP{CURL*curl=nullptr;vector<CURLcode>pr;string URL{},r{};void prep(const string&u);
+class HTTP{CURL*curl=nullptr;vector<CURLcode>pr;string URL{},r{};void prep(const string&u);CURLcode perform_with_retry();
 public:
 HTTP();explicit HTTP(string);~HTTP();HTTP(const HTTP&)=delete;HTTP&operator=(const HTTP&)=delete;
 static size_t cb(const void*,size_t,size_t,string*);
@@ -34,14 +36,15 @@ inline HTTP::HTTP(string u):URL(std::move(u)){curl=curl_easy_init();}
 inline HTTP::~HTTP(){if(curl)curl_easy_cleanup(curl);}
 inline void HTTP::prep(const string&u){curl_easy_reset(curl);r.clear();curl_easy_setopt(curl,CURLOPT_URL,u.c_str());curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,cb);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&r);}
 inline size_t HTTP::cb(const void*b,size_t s,size_t n,string*d){size_t x=s*n;try{d->append((const char*)b,x);}catch(std::bad_alloc&e){screen(std::clog,UTILS_ERROR,SYSTEM_DECORATOR,&e);}return x;}
-inline int HTTP::getSimple(const string&e){prep(e!=DEFAULT?URL+e:URL);curl_easy_setopt(curl,CURLOPT_HTTPGET,1L);auto p=curl_easy_perform(curl);pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
-inline int HTTP::getBase(GET*f,const string&e,bool h,const VHeaders*b){string u=e!=DEFAULT?URL+e:URL;if(f)u+="?"+f->t();prep(u);curl_easy_setopt(curl,CURLOPT_HTTPGET,1L);curl_slist*l=nullptr;if(h){l=makeVHeaders(b->al);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,l);}auto p=curl_easy_perform(curl);pr.push_back(p);if(l)curl_slist_free_all(l);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
+inline CURLcode HTTP::perform_with_retry(){CURLcode p=curl_easy_perform(curl);for(int attempt=0;attempt<200&&p==CURLE_COULDNT_CONNECT;++attempt){std::this_thread::sleep_for(std::chrono::milliseconds(5));p=curl_easy_perform(curl);}return p;}
+inline int HTTP::getSimple(const string&e){prep(e!=DEFAULT?URL+e:URL);curl_easy_setopt(curl,CURLOPT_HTTPGET,1L);auto p=perform_with_retry();pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
+inline int HTTP::getBase(GET*f,const string&e,bool h,const VHeaders*b){string u=e!=DEFAULT?URL+e:URL;if(f)u+="?"+f->t();prep(u);curl_easy_setopt(curl,CURLOPT_HTTPGET,1L);curl_slist*l=nullptr;if(h){l=makeVHeaders(b->al);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,l);}auto p=perform_with_retry();pr.push_back(p);if(l)curl_slist_free_all(l);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
 inline int HTTP::get(GET&f,const VHeaders&h,const string&e){return getBase(&f,e,true,&h);}
 inline int HTTP::getVHeaders(const VHeaders&h,const string&e){return getBase(nullptr,e,true,&h);}
-inline int HTTP::post(POST&f,const string&e,const string&t){prep(e!=DEFAULT?URL+e:URL);auto d=f.t();curl_easy_setopt(curl,CURLOPT_POSTFIELDS,d.c_str());curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,t!=DEFAULT?t.c_str():(const char*)POST_t);auto p=curl_easy_perform(curl);pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
-inline int HTTP::post(POST*f,const VHeaders&h,const string&e,const string&t){prep(e!=DEFAULT?URL+e:URL);string d;if(f){d=f->t();curl_easy_setopt(curl,CURLOPT_POSTFIELDS,d.c_str());}if(t!=DEFAULT)curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,t.c_str());auto l=makeVHeaders(h.al);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,l);auto p=curl_easy_perform(curl);pr.push_back(p);curl_slist_free_all(l);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
+inline int HTTP::post(POST&f,const string&e,const string&t){prep(e!=DEFAULT?URL+e:URL);auto d=f.t();curl_easy_setopt(curl,CURLOPT_POSTFIELDS,d.c_str());curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,t!=DEFAULT?t.c_str():(const char*)POST_t);auto p=perform_with_retry();pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
+inline int HTTP::post(POST*f,const VHeaders&h,const string&e,const string&t){prep(e!=DEFAULT?URL+e:URL);string d;if(f){d=f->t();curl_easy_setopt(curl,CURLOPT_POSTFIELDS,d.c_str());}if(t!=DEFAULT)curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,t.c_str());auto l=makeVHeaders(h.al);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,l);auto p=perform_with_retry();pr.push_back(p);curl_slist_free_all(l);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
 inline int HTTP::postVHeaders(const VHeaders&h,const string&e){return post(nullptr,h,e,"POST");}
-inline int HTTP::postSimple(const string&e){prep(e!=DEFAULT?URL+e:URL);curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,(const char*)POST_t);auto p=curl_easy_perform(curl);pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
+inline int HTTP::postSimple(const string&e){prep(e!=DEFAULT?URL+e:URL);curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,(const char*)POST_t);auto p=perform_with_retry();pr.push_back(p);if(p!=CURLE_OK)screen(std::clog,UTILS_WARNING,CURL_DECORATOR,p);return HTTP_SUCCESS;}
 inline int HTTP::put(PUT&f,const string&e){return post(f,e!=DEFAULT?e:"",PUT_TYPE);}
 inline int HTTP::put(PUT&f,const VHeaders&h,const string&e){return post(&f,h,e!=DEFAULT?e:"",PUT_TYPE);}
 inline int HTTP::Delete(DELETE&f,const string&e){return post(f,e!=DEFAULT?e:"",DELETE_TYPE);}

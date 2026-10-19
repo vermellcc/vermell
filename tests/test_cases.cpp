@@ -878,7 +878,7 @@ TEST(ParserHardeningUnit, ParseAcceptsOnlyStrictRequestLines) {
      EXPECT_FALSE(Msg::parse("GET  / HTTP/1.1\r\n\r\n").has_value());            // empty target
      EXPECT_FALSE(Msg::parse("GET / HTTP/1.1 EXTRA\r\n\r\n").has_value());       // four parts
      EXPECT_FALSE(Msg::parse("GET / XYZ\r\n\r\n").has_value());                  // bogus version
-     EXPECT_FALSE(Msg::parse(string("G\x01""T / HTTP/1.1\r\n\r\n", 20)).has_value()); // control char in method
+     EXPECT_FALSE(Msg::parse(string("G\x01""T / HTTP/1.1\r\n\r\n")).has_value()); // control char in method
 }
 
 TEST(ParserHardeningUnit, HostIsRequiredAndUniqueForHttp11) {
@@ -1582,6 +1582,36 @@ TEST_F(TestSuite, TestStaticPrefixMount) {
      isolate_method.get();
      EXPECT_NE(outside.find("HTTP/1.1 404 Not Found"), string::npos);
      EXPECT_NE(outside.find("not defined"), string::npos); // generic route 404
+}
+
+// Regression: two requests pipelined over one connection must be framed and
+// answered separately. A leftover byte in st.buffer (the cross-request state
+// that caused the ConnState leak) would bleed one request into the other.
+TEST_F(TestSuite, TestPipelinedRequestsAreSeparated) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/one", {[&](Query &http) { http.send("first"); }});
+     router.get("/two", {[&](Query &http) { http.send("second"); }});
+
+     ISOLATE( router.listen(); )
+     // listenOne() disables keep-alive, which would stop after the first
+     // request. listen() keeps it on, and "Connection: close" on the second
+     // request makes the server close so raw_exchange's read-to-EOF returns.
+     const string wire =
+         "GET /one HTTP/1.1\r\nHost: x\r\n\r\n"
+         "GET /two HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+     const string res = raw_exchange(port, wire);
+     router.setListenStatus(neo::STOP);
+     isolate_method.get();
+
+     const size_t first  = res.find("first");
+     const size_t second = res.find("second");
+     EXPECT_NE(first, string::npos);
+     EXPECT_NE(second, string::npos);
+     EXPECT_LT(first, second);                            // order preserved
+     EXPECT_EQ(res.find("first", first + 5), string::npos);   // "first" appears once
+     EXPECT_EQ(res.find("second", second + 6), string::npos); // "second" appears once
 }
 
 

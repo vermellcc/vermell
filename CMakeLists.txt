@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VERMELL_HARDENING_FLAGS "-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE")
 
-set(CMAKE_CXX_FLAGS_DEBUG "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 -g -fsanitize=address ${VERMELL_HARDENING_FLAGS}")
+set(CMAKE_CXX_FLAGS_DEBUG "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 -g -fsanitize=address,undefined ${VERMELL_HARDENING_FLAGS}")
 set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -pedantic -Wpedantic -Wnon-virtual-dtor -Wnull-dereference -Wstrict-overflow=5 -Wmissing-include-dirs -Wstrict-aliasing=2 -O3 ${VERMELL_HARDENING_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-pie -Wl,-z,relro,-z,now")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-pie -Wl,-z,relro,-z,now")
@@ -49,6 +49,19 @@ if (TESTING)
     target_link_libraries(main CURL::libcurl)
 
 endif ()
+
+# Optional libFuzzer harness for the HTTP parser (security hardening). Build
+# with: cmake -S . -B build-fuzz -DVERMELL_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+option(VERMELL_FUZZ "Build the libFuzzer harness for the HTTP parser" OFF)
+if(VERMELL_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "VERMELL_FUZZ requires Clang (libFuzzer)")
+    endif()
+    add_executable(fuzz_message tests/fuzz/message_fuzz.cpp)
+    target_include_directories(fuzz_message PRIVATE "${CMAKE_SOURCE_DIR}/include")
+    target_compile_options(fuzz_message PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz_message PRIVATE -fsanitize=fuzzer,address,undefined)
+endif()
 
 include(GNUInstallDirs)
 install(TARGETS vermell
