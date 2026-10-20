@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 #include <initializer_list>
@@ -40,6 +41,65 @@ using std::string;
     key.push_back('\x1f');
     key.append(method);
     return key;
+}
+
+// A route path is "parameterized" when it carries a named segment (":name")
+// or a catch-all ("*"). Such routes are matched by segments, not by the exact
+// string key above.
+[[nodiscard]] inline bool is_pattern_route(const std::string_view path) noexcept {
+    return path.find(':') != std::string_view::npos
+        || path.find('*') != std::string_view::npos;
+}
+
+// Splits a request path into its non-empty segments: "/users/123" becomes
+// {"users", "123"} and "/" becomes {} (leading/trailing and doubled slashes
+// are ignored, mirroring how most routers normalize paths).
+[[nodiscard]] inline std::vector<string> split_path(const std::string_view path) {
+    std::vector<string> out;
+    size_t pos = 0;
+    while (pos <= path.size()) {
+        const size_t slash = path.find('/', pos);
+        const std::string_view seg = path.substr(
+            pos, slash == std::string_view::npos ? path.size() - pos : slash - pos);
+        if (!seg.empty())
+            out.emplace_back(seg);
+        if (slash == std::string_view::npos)
+            break;
+        pos = slash + 1;
+    }
+    return out;
+}
+
+// Matches a compiled pattern (literals, ":name", "*") against the request's
+// segments. On success it returns the captured parameters: ":name" yields a
+// percent-decoded value, and a trailing "*" yields the joined remainder under
+// the key "*". Returns std::nullopt when the pattern does not match.
+[[nodiscard]] inline std::optional<std::vector<std::pair<string, string>>>
+match_pattern(const std::vector<string>& pattern, const std::vector<string>& path) {
+    std::vector<std::pair<string, string>> params;
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        const string& seg = pattern[i];
+        if (seg == "*") {
+            string remainder;
+            for (size_t j = i; j < path.size(); ++j) {
+                if (j != i)
+                    remainder += '/';
+                remainder += path[j];
+            }
+            params.emplace_back("*", vermell::http::percent_decode(remainder));
+            return params;
+        }
+        if (i >= path.size())
+            return std::nullopt;
+        if (seg.size() > 1 && seg.front() == ':') {
+            params.emplace_back(seg.substr(1), vermell::http::percent_decode(path[i]));
+        } else if (seg != path[i]) {
+            return std::nullopt;
+        }
+    }
+    if (pattern.size() != path.size())
+        return std::nullopt;
+    return params;
 }
 
 
@@ -84,6 +144,8 @@ class Query {
 
     string response {"default"}, headers, guardMsg{};
     vermell::http::WireResponse last;
+    // Route parameters captured by a parameterized route ("/users/:id").
+    std::vector<std::pair<string, string>> route_params_{};
 
     public:
     Query()  = default;
@@ -97,6 +159,22 @@ class Query {
     vermell::RenderSecurity render_sec{};
 
     void setRenderSecurity(const vermell::RenderSecurity& sec) noexcept { render_sec = sec; }
+
+    // Route parameters from a parameterized route. setRouteParams() is called
+    // by the router before the middleware runs; handlers read them through
+    // param("id").value / param("id").as<int>() or iterate params().
+    void setRouteParams(std::vector<std::pair<string, string>> p) noexcept { route_params_ = std::move(p); }
+    [[nodiscard]] param_box param(const string& name) const {
+        for (const auto& [k, v] : route_params_)
+            if (k == name)
+                return param_box(k, v);
+        return param_box(name, string{});
+    }
+    [[nodiscard]] Param_t params() const {
+        Param_t p;
+        p.setContent(route_params_);
+        return p;
+    }
 
     [[nodiscard]] vermell::http::WireResponse takeData() noexcept;
     [[nodiscard]] bool    getNext()    const noexcept;
@@ -145,9 +223,11 @@ struct Core_init_t  {
      std::pair<vermell::http::WireResponse, std::chrono::duration<double>::rep>
      execute(const vermell::http::Message &message,
              std::unique_ptr<string> &guard_msg,
-             const vermell::RenderSecurity& render_sec = {}) {
+             const vermell::RenderSecurity& render_sec = {},
+             std::vector<std::pair<string, string>> route_params = {}) {
         Query remote_control;
         remote_control.setRenderSecurity(render_sec);
+        remote_control.setRouteParams(std::move(route_params));
         remote_control.body.consume(message);
 
         for (size_t i = 0; i < functions.size(); i++) {
@@ -213,6 +293,14 @@ struct RouteMapEq {
 
 using RoutesMap = std::unordered_map<string, std::unique_ptr<listen_routes>,
                                     RouteMapHash, RouteMapEq>;
+
+// Parameterized routes (":name" and "*") are kept separately from the exact
+// string-keyed map: they are matched by segment scan in ExecuteRoute.
+struct PatternRoute {
+    std::vector<string> segments;         // literals, ":name" or a final "*"
+    std::unique_ptr<listen_routes> impl;  // middlewares + guard state
+};
+using PatternRoutes = std::vector<PatternRoute>;
 
 struct Route_t {
     Route_t(string _r, MiddlewareList _m, string _t) : route(std::move(_r)), middlewares(std::move(_m)), type(std::move(_t)) { }

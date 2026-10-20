@@ -26,6 +26,9 @@ class Vermell {
 
     shared_ptr<workers::RouterEpoll<T>> router_epoll;
     shared_ptr<RoutesMap> routes;
+    // Parameterized routes (":name"/"*"): matched by segment scan, registered
+    // alongside the exact string-keyed map above.
+    shared_ptr<PatternRoutes> pattern_routes;
     std::shared_ptr<T> tcpControl;
 
     vermell::Config config_{};
@@ -105,10 +108,20 @@ template <class T>
 
 int Vermell<T>::http_response(const string &endpoint, MiddlewareList middlewareList, const string& type) {
     try {
-        if (routes == nullptr)
-            routes = make_shared<RoutesMap>();
+        if (is_pattern_route(endpoint)) {
+            if (pattern_routes == nullptr)
+                pattern_routes = make_shared<PatternRoutes>();
 
-        routes->operator[](route_key(endpoint, type)) = make_unique<listen_routes>( endpoint, std::move(middlewareList), type);
+            PatternRoute pr;
+            pr.segments = split_path(endpoint);
+            pr.impl = make_unique<listen_routes>(endpoint, std::move(middlewareList), type);
+            pattern_routes->push_back(std::move(pr));
+        } else {
+            if (routes == nullptr)
+                routes = make_shared<RoutesMap>();
+
+            routes->operator[](route_key(endpoint, type)) = make_unique<listen_routes>( endpoint, std::move(middlewareList), type);
+        }
     }
     catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
@@ -177,11 +190,11 @@ Vermell<T>& Vermell<T>::staticX(const std::string& mount, const std::string& dir
 
 template <class T>
 void Vermell<T>::listen() {
-   router_epoll->getMainProcess(routes, neo::WHILE, config_, static_mounts_);
+   router_epoll->getMainProcess(routes, pattern_routes, neo::WHILE, config_, static_mounts_);
 }
 template <class T>
 void Vermell<T>::listenOne() {
-    router_epoll->getMainProcess(routes, neo::UNIQUE, config_, static_mounts_);
+    router_epoll->getMainProcess(routes, pattern_routes, neo::UNIQUE, config_, static_mounts_);
 }
 
 template <class T>

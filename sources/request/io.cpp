@@ -46,6 +46,7 @@ namespace {
 
 RequestIO::RequestIO(const shared_ptr<vector<epoll_event>> &evs,
                      const std::shared_ptr<RoutesMap> &routes,
+                     const shared_ptr<PatternRoutes> &pattern_routes,
                      int &listener_fd,
                      int &epfd,
                      const shared_ptr<Server> &con,
@@ -55,6 +56,7 @@ RequestIO::RequestIO(const shared_ptr<vector<epoll_event>> &evs,
                      const shared_ptr<threading::ThreadPool>& pool)
     : events(evs),
       routes(routes),
+      pattern_routes_(pattern_routes),
       file_descriptor(std::make_unique<int>(listener_fd)),
       epoll_fd(std::make_unique<int>(epfd)),
       connection(con),
@@ -516,7 +518,7 @@ bool RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
                 bool guarded;
                 {
                     std::lock_guard<std::mutex> lock(itr->second->route_mutex);
-                    guarded = TimeGuard(itr);
+                    guarded = TimeGuard(*itr->second);
                     if (guarded)
                         send_target = itr->second->guardRouteMsg != nullptr
                                           ? utility_t::guard_route(itr->second->time_key, *itr->second->guardRouteMsg)
@@ -537,6 +539,44 @@ bool RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
                     }
                     send_target = std::move(data);
                     responded = true;
+                }
+            }
+            else if (pattern_routes_ && !pattern_routes_->empty()) {
+                const auto path_segments = split_path(message->path);
+                for (auto& pr : *pattern_routes_) {
+                    if (pr.impl->route.getType() != message->method)
+                        continue;
+                    auto captured = match_pattern(pr.segments, path_segments);
+                    if (!captured.has_value())
+                        continue;
+
+                    bool guarded;
+                    {
+                        std::lock_guard<std::mutex> lock(pr.impl->route_mutex);
+                        guarded = TimeGuard(*pr.impl);
+                        if (guarded)
+                            send_target = pr.impl->guardRouteMsg != nullptr
+                                              ? utility_t::guard_route(pr.impl->time_key, *pr.impl->guardRouteMsg)
+                                              : utility_t::guard_route(pr.impl->time_key);
+                    }
+
+                    if (guarded) {
+                        responded = true;
+                    } else {
+                        std::unique_ptr<string> guard_msg;
+                        auto [data, time_key] = pr.impl->middlewares.execute(*message, guard_msg,
+                                                                             config_snapshot()->render,
+                                                                             std::move(*captured));
+                        if (time_key > VER_OK) {
+                            std::lock_guard<std::mutex> lock(pr.impl->route_mutex);
+                            pr.impl->time_key = time_key;
+                            pr.impl->time_point = std::chrono::system_clock::now();
+                            pr.impl->guardRouteMsg = std::move(guard_msg);
+                        }
+                        send_target = std::move(data);
+                        responded = true;
+                    }
+                    break;
                 }
             }
             else if (!static_mounts_.empty()) {
@@ -589,16 +629,16 @@ bool RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
 }
 
 
-bool RequestIO::TimeGuard(const RoutesMap::const_iterator &itr) {
-    if (itr->second->time_key <= 0)
+bool RequestIO::TimeGuard(const listen_routes& lr) {
+    if (lr.time_key <= 0)
         return false;
-    if (itr->second->time_point == std::chrono::time_point<std::chrono::system_clock>())
+    if (lr.time_point == std::chrono::time_point<std::chrono::system_clock>())
         return false;
 
     const auto now = std::chrono::system_clock::now();
 
-    const std::chrono::duration<double> distance = now - itr->second->time_point;
-    return distance.count() < itr->second->time_key;
+    const std::chrono::duration<double> distance = now - lr.time_point;
+    return distance.count() < lr.time_key;
 }
 
 

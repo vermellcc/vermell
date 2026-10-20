@@ -33,6 +33,7 @@ class RequestIO {
     private:
     shared_ptr<std::vector<epoll_event>> events;
     shared_ptr<RoutesMap>  routes;
+    shared_ptr<PatternRoutes> pattern_routes_;
     unique_ptr<int> file_descriptor;
     unique_ptr<int> epoll_fd;
     shared_ptr<Server> connection;
@@ -110,6 +111,7 @@ class RequestIO {
 
      RequestIO(const shared_ptr<vector<epoll_event>>&,
                const shared_ptr<RoutesMap> &,
+               const shared_ptr<PatternRoutes> &,
                int &,
                int &,
                const shared_ptr<Server>&,
@@ -125,7 +127,7 @@ class RequestIO {
 
     [[nodiscard]] size_t handled_connections() const noexcept { return handled_.load(); }
 
-    static bool TimeGuard(const RoutesMap::const_iterator & itr);
+    static bool TimeGuard(const listen_routes& lr);
     bool ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &routes) const;
 };
 
