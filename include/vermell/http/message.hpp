@@ -194,8 +194,8 @@ namespace vermell::http {
     //   - the body is exactly Content-Length bytes; less is an error
     //   - duplicated Content-Length is accepted only when every value
     //     matches; conflicting or non-numeric values are rejected (400)
-    //   - Transfer-Encoding is not implemented: rejected with 501 instead
-    //     of being silently mis-parsed
+    //   - Transfer-Encoding: chunked is supported (de-chunked on parse); any
+    //     other coding is rejected with 501 instead of being mis-parsed
     //   - at most MAX_HEADERS header fields (431)
     class Message {
     public:
@@ -301,6 +301,16 @@ namespace vermell::http {
                 return {Framing::BadRequest, 0};
 
             const size_t base = head_end + separator;
+
+            if (scan.chunked) {
+                const auto result = scan_chunked(raw.substr(base));
+                if (result.state == ChunkState::Complete)
+                    return {Framing::Complete, base + result.consumed};
+                if (result.state == ChunkState::Malformed)
+                    return {Framing::BadRequest, 0};
+                return {Framing::Incomplete, 0};
+            }
+
             size_t total = base;
             if (scan.content_length > std::string_view::npos - base)
                 total = std::string_view::npos; // saturated: the caller's size cap rejects it
@@ -412,13 +422,20 @@ namespace vermell::http {
             if (host_count == 0 && !version_view.starts_with("HTTP/1.0"))
                 return std::nullopt;
 
-            // ---- body: exactly Content-Length bytes, or none ----
+            // ---- body: exactly Content-Length bytes, chunked, or none ----
             msg.content_length_ = scan.content_length;
             const size_t body_begin = head_end + separator;
             if (scan.has_content_length && scan.content_length > 0) {
                 if (raw.size() - body_begin < scan.content_length)
                     return std::nullopt; // promised bytes never arrived
                 msg.body = std::string(raw.substr(body_begin, scan.content_length));
+            }
+            else if (scan.chunked) {
+                auto result = scan_chunked(raw.substr(body_begin));
+                if (result.state != ChunkState::Complete)
+                    return std::nullopt;
+                msg.body = std::move(result.data);
+                msg.content_length_ = msg.body.size();
             }
 
             msg.parse_content_type();
@@ -437,7 +454,8 @@ namespace vermell::http {
             size_t content_length     = 0;
             bool   has_content_length = false;
             bool   bad                = false; // CL non-numeric or conflicting duplicates
-            bool   transfer_encoding  = false; // any Transfer-Encoding header
+            bool   transfer_encoding  = false; // a Transfer-Encoding other than "chunked"
+            bool   chunked            = false; // Transfer-Encoding: chunked
             bool   too_many           = false; // > MAX_HEADERS fields
         };
 
@@ -502,6 +520,10 @@ namespace vermell::http {
                 const std::string_view value = detail::trim(line.substr(colon + 1));
 
                 if (detail::iequals(name, "content-length")) {
+                    if (scan.chunked || scan.transfer_encoding) {
+                        scan.bad = true;
+                        return scan;
+                    }
                     size_t parsed = 0;
                     const char* first = value.data();
                     const char* last  = first + value.size();
@@ -520,11 +542,96 @@ namespace vermell::http {
                     scan.has_content_length = true;
                     scan.content_length     = parsed;
                 } else if (detail::iequals(name, "transfer-encoding")) {
-                    scan.transfer_encoding = true; // not supported: reject early
-                    return scan;
+                    if (scan.has_content_length || scan.chunked || scan.transfer_encoding) {
+                        scan.bad = true;
+                        return scan;
+                    }
+                    if (detail::iequals(detail::trim(value), "chunked"))
+                        scan.chunked = true;
+                    else
+                        scan.transfer_encoding = true;
                 }
             }
             return scan;
+        }
+
+        enum class ChunkState { Complete, Incomplete, Malformed };
+
+        struct ChunkScanResult {
+            ChunkState state = ChunkState::Incomplete;
+            std::string data;
+            size_t consumed = 0;
+        };
+
+        static ChunkScanResult scan_chunked(const std::string_view body) noexcept {
+            ChunkScanResult result;
+            size_t pos = 0;
+            for (;;) {
+                const size_t line_end = body.find("\r\n", pos);
+                if (line_end == std::string_view::npos) {
+                    result.state = ChunkState::Incomplete;
+                    return result;
+                }
+                const std::string_view size_line = body.substr(pos, line_end - pos);
+
+                size_t size = 0;
+                size_t i = 0;
+                bool any = false;
+                while (i < size_line.size()) {
+                    const int d = detail::hex_value(size_line[i]);
+                    if (d < 0)
+                        break;
+                    any = true;
+                    if (size > (std::string_view::npos - static_cast<size_t>(d)) / 16) {
+                        result.state = ChunkState::Malformed;
+                        return result;
+                    }
+                    size = size * 16 + static_cast<size_t>(d);
+                    ++i;
+                }
+                if (!any) {
+                    result.state = ChunkState::Malformed;
+                    return result;
+                }
+                if (i < size_line.size() && size_line[i] != ';') {
+                    result.state = ChunkState::Malformed;
+                    return result;
+                }
+
+                pos = line_end + 2;
+
+                if (size == 0) {
+                    for (;;) {
+                        const size_t t_end = body.find("\r\n", pos);
+                        if (t_end == std::string_view::npos) {
+                            result.state = ChunkState::Incomplete;
+                            return result;
+                        }
+                        if (t_end == pos) {
+                            result.state = ChunkState::Complete;
+                            result.consumed = t_end + 2;
+                            return result;
+                        }
+                        pos = t_end + 2;
+                    }
+                }
+
+                if (body.size() - pos < size) {
+                    result.state = ChunkState::Incomplete;
+                    return result;
+                }
+                result.data.append(body.data() + pos, size);
+                pos += size;
+                if (pos + 2 > body.size()) {
+                    result.state = ChunkState::Incomplete;
+                    return result;
+                }
+                if (body[pos] != '\r' || body[pos + 1] != '\n') {
+                    result.state = ChunkState::Malformed;
+                    return result;
+                }
+                pos += 2;
+            }
         }
 
         // RFC 9110 tchar: method and header names are tokens.

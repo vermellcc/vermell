@@ -852,8 +852,45 @@ TEST(ParserHardeningUnit, GarbageContentLengthIsRejected) {
 }
 
 TEST(ParserHardeningUnit, TransferEncodingIsNotSilentlyMisparsed) {
-     const auto i = Msg::inspect("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+     const auto i = Msg::inspect("POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n");
      EXPECT_EQ(i.framing, Framing::NotImplemented);
+}
+
+TEST(ParserHardeningUnit, ChunkedBodyIsDecoded) {
+     const string wire =
+         "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+         "5\r\nhello\r\n"
+         "6\r\n world\r\n"
+         "0\r\n\r\n";
+     const auto i = Msg::inspect(wire);
+     EXPECT_EQ(i.framing, Framing::Complete);
+     EXPECT_EQ(i.expected, wire.size());
+
+     const auto msg = Msg::parse(wire);
+     ASSERT_TRUE(msg.has_value());
+     EXPECT_EQ(msg->body, "hello world");
+     EXPECT_EQ(msg->content_length(), 11UL);
+}
+
+TEST(ParserHardeningUnit, ChunkedBodyIncompleteUntilTerminator) {
+     const string wire =
+         "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+         "5\r\nhello\r\n";
+     EXPECT_EQ(Msg::inspect(wire).framing, Framing::Incomplete);
+}
+
+TEST(ParserHardeningUnit, ChunkedMalformedIsRejected) {
+     EXPECT_EQ(Msg::inspect("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n").framing,
+               Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloX0\r\n\r\n").framing,
+               Framing::BadRequest);
+}
+
+TEST(ParserHardeningUnit, ChunkedWithContentLengthIsSmuggling) {
+     const auto i = Msg::inspect(
+         "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
+         "5\r\nhello\r\n0\r\n\r\n");
+     EXPECT_EQ(i.framing, Framing::BadRequest);
 }
 
 TEST(ParserHardeningUnit, HeaderFloodIsRejected) {
@@ -1020,17 +1057,22 @@ TEST_F(TestSuite, TestConflictingContentLengthRejected) {
      EXPECT_NE(res.find("HTTP/1.1 400 Bad Request"), string::npos);
 }
 
-TEST_F(TestSuite, TestTransferEncodingRejected) {
+TEST_F(TestSuite, TestChunkedBodyDecodedOverHttp) {
      Router router;
      const uint16_t port_8101 = free_port();
      router.setPort(port_8101);
-     router.post("/", {[&](Query &http) { http.send("unreachable"); }});
+     router.post("/", {[&](Query &http) { http.send(http.body.raw()); }});
 
      ISOLATE( router.listenOne(); )
-     const string res = raw_exchange(port_8101, "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+     const string res = raw_exchange(port_8101,
+         "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+         "5\r\nhello\r\n"
+         "6\r\n world\r\n"
+         "0\r\n\r\n");
      isolate_method.get();
 
-     EXPECT_NE(res.find("HTTP/1.1 501 Not Implemented"), string::npos);
+     EXPECT_NE(res.find("HTTP/1.1 200 OK"), string::npos);
+     EXPECT_TRUE(res.ends_with("hello world"));
 }
 
 TEST_F(TestSuite, TestTooManyHeadersRejected) {
