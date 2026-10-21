@@ -73,6 +73,7 @@ namespace workers {
         }
 
         void getMainProcess(const shared_ptr<RoutesMap> &_routes,
+                            const shared_ptr<PatternRoutes> &_pattern_routes,
                             const neo::LISTEN_TYPE _listen_type = neo::WHILE,
                             const vermell::Config &config = {},
                             const std::vector<vermell::StaticMount>& static_mounts = {}) {
@@ -138,7 +139,8 @@ namespace workers {
                         throw std::range_error(VER_EPOLL_CTL);
                     }
 
-                    loop.io = make_shared<RequestIO>(loop.events, _routes, listener_fd, loop.epfd,
+                    loop.io = make_shared<RequestIO>(loop.events, _routes, _pattern_routes,
+                                                     listener_fd, loop.epfd,
                                                      loop.listener, config, static_mounts,
                                                      _listen_type == neo::WHILE, pool_);
                     requests_.push_back(loop.io);

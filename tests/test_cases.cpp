@@ -1614,4 +1614,83 @@ TEST_F(TestSuite, TestPipelinedRequestsAreSeparated) {
      EXPECT_EQ(res.find("second", second + 6), string::npos); // "second" appears once
 }
 
+// Parameterized routes: "/users/:id" captures one path segment.
+TEST_F(TestSuite, TestRouteParamCapturesSegment) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/users/:id", {[&](Query &http) {
+          http.send("id=" + http.param("id").value);
+     }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_TRUE(res.ends_with("id=42"));
+}
+
+// Route parameters are percent-decoded with path semantics.
+TEST_F(TestSuite, TestRouteParamPercentDecoded) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/search/:q", {[&](Query &http) {
+          http.send("q=" + http.param("q").value);
+     }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET /search/hello%20world HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_TRUE(res.ends_with("q=hello world"));
+}
+
+// Several parameters in one route.
+TEST_F(TestSuite, TestRouteMultipleParams) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/users/:uid/posts/:pid", {[&](Query &http) {
+          http.send(http.param("uid").value + ":" + http.param("pid").value);
+     }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET /users/7/posts/9 HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_TRUE(res.ends_with("7:9"));
+}
+
+// A trailing "*" is a catch-all that absorbs the remainder.
+TEST_F(TestSuite, TestRouteWildcard) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/files/*", {[&](Query &http) {
+          http.send("rest=" + http.param("*").value);
+     }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET /files/a/b/c HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_TRUE(res.ends_with("rest=a/b/c"));
+}
+
+// Exact routes always win over a parameterized route of the same shape.
+TEST_F(TestSuite, TestExactRouteWinsOverPattern) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/users/me", {[&](Query &http) { http.send("exact"); }});
+     router.get("/users/:id", {[&](Query &http) { http.send("param:" + http.param("id").value); }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET /users/me HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_TRUE(res.ends_with("exact"));
+}
+
 
