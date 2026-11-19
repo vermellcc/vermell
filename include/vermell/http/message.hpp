@@ -98,6 +98,16 @@ namespace vermell::http {
             return out;
         }
 
+        // No CTLs except HTAB in field values (CVE-2022-35256, CVE-2024-27982).
+        [[nodiscard]] inline bool valid_field_value(const std::string_view v) noexcept {
+            for (const char c : v) {
+                const auto u = static_cast<unsigned char>(c);
+                if ((u < 0x20 && c != '\t') || u == 0x7f)
+                    return false;
+            }
+            return true;
+        }
+
         [[nodiscard]] inline int hex_value(const char c) noexcept {
             if (c >= '0' && c <= '9') return c - '0';
             if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -294,6 +304,9 @@ namespace vermell::http {
                 return {Framing::BadRequest, 0};
             if (scan.transfer_encoding)
                 return {Framing::NotImplemented, 0};
+            // RFC 9112 §6.1: Transfer-Encoding on HTTP/1.0 is faulty framing.
+            if (scan.chunked && !version_at_least_11(request_line_of(raw.substr(0, head_end))))
+                return {Framing::BadRequest, 0};
             // RFC 9112 §3.5: HTTP/1.1+ requests must use CRLF terminators;
             // bare-LF or mixed line endings are a desync vector behind a
             // proxy that normalizes differently.
@@ -303,7 +316,8 @@ namespace vermell::http {
             const size_t base = head_end + separator;
 
             if (scan.chunked) {
-                const auto result = scan_chunked(raw.substr(base));
+                // Framing only: no body copy on every recv().
+                const auto result = scan_chunked(raw.substr(base), false);
                 if (result.state == ChunkState::Complete)
                     return {Framing::Complete, base + result.consumed};
                 if (result.state == ChunkState::Malformed)
@@ -335,6 +349,8 @@ namespace vermell::http {
                 return std::nullopt; // inspect() already pinpointed the reason
             if (!line_endings_ok(head, separator))
                 return std::nullopt; // RFC 9112 §3.5: bare-LF/mixed endings for HTTP/1.1+
+            if (scan.chunked && !version_at_least_11(request_line_of(head)))
+                return std::nullopt; // RFC 9112 §6.1: Transfer-Encoding on HTTP/1.0
 
             Message msg;
 
@@ -398,12 +414,16 @@ namespace vermell::http {
                     if (colon == std::string_view::npos || colon == 0)
                         return std::nullopt; // malformed field line
 
-                    const std::string_view name = detail::trim(line.substr(0, colon));
+                    // No whitespace before ':' (CVE-2019-16276, CVE-2020-7238).
+                    const std::string_view name = line.substr(0, colon);
                     if (!is_token(name))
                         return std::nullopt; // spaces/control chars in the name
 
-                    msg.headers.emplace_back(std::string(name),
-                                             std::string(detail::trim(line.substr(colon + 1))));
+                    const std::string_view value = detail::trim(line.substr(colon + 1));
+                    if (!detail::valid_field_value(value))
+                        return std::nullopt; // NUL / bare CR / control chars in the value
+
+                    msg.headers.emplace_back(std::string(name), std::string(value));
                 }
             }
 
@@ -431,7 +451,7 @@ namespace vermell::http {
                 msg.body = std::string(raw.substr(body_begin, scan.content_length));
             }
             else if (scan.chunked) {
-                auto result = scan_chunked(raw.substr(body_begin));
+                auto result = scan_chunked(raw.substr(body_begin), true);
                 if (result.state != ChunkState::Complete)
                     return std::nullopt;
                 msg.body = std::move(result.data);
@@ -516,8 +536,13 @@ namespace vermell::http {
                 if (colon == std::string_view::npos || colon == 0)
                     continue; // malformed line: parse() rejects it; framing ignores it
 
-                const std::string_view name  = detail::trim(line.substr(0, colon));
+                // No whitespace before ':' (CVE-2019-16276, CVE-2020-7238).
+                const std::string_view name  = line.substr(0, colon);
                 const std::string_view value = detail::trim(line.substr(colon + 1));
+                if (!is_token(name) || !detail::valid_field_value(value)) {
+                    scan.bad = true;
+                    return scan;
+                }
 
                 if (detail::iequals(name, "content-length")) {
                     if (scan.chunked || scan.transfer_encoding) {
@@ -563,7 +588,9 @@ namespace vermell::http {
             size_t consumed = 0;
         };
 
-        static ChunkScanResult scan_chunked(const std::string_view body) noexcept {
+        // `collect` = false only validates framing. Bare CR/LF in chunk
+        // lines or trailers is rejected (CVE-2025-22871).
+        static ChunkScanResult scan_chunked(const std::string_view body, const bool collect) {
             ChunkScanResult result;
             size_t pos = 0;
             for (;;) {
@@ -573,6 +600,10 @@ namespace vermell::http {
                     return result;
                 }
                 const std::string_view size_line = body.substr(pos, line_end - pos);
+                if (!detail::valid_field_value(size_line)) {
+                    result.state = ChunkState::Malformed;
+                    return result;
+                }
 
                 size_t size = 0;
                 size_t i = 0;
@@ -612,6 +643,13 @@ namespace vermell::http {
                             result.consumed = t_end + 2;
                             return result;
                         }
+                        const std::string_view trailer = body.substr(pos, t_end - pos);
+                        if (!detail::valid_field_value(trailer)
+                            || trailer.front() == ' ' || trailer.front() == '\t'
+                            || trailer.find(':') == std::string_view::npos) {
+                            result.state = ChunkState::Malformed;
+                            return result;
+                        }
                         pos = t_end + 2;
                     }
                 }
@@ -620,7 +658,8 @@ namespace vermell::http {
                     result.state = ChunkState::Incomplete;
                     return result;
                 }
-                result.data.append(body.data() + pos, size);
+                if (collect)
+                    result.data.append(body.data() + pos, size);
                 pos += size;
                 if (pos + 2 > body.size()) {
                     result.state = ChunkState::Incomplete;
@@ -663,6 +702,12 @@ namespace vermell::http {
                 && std::isdigit(static_cast<unsigned char>(v[5]))
                 && v[6] == '.'
                 && std::isdigit(static_cast<unsigned char>(v[7]));
+        }
+
+        // Request line of a head.
+        static std::string_view request_line_of(const std::string_view head) noexcept {
+            const size_t le = head.find('\n');
+            return le == std::string_view::npos ? head : head.substr(0, le);
         }
 
         // True when the request line declares HTTP/1.1 or newer. Malformed

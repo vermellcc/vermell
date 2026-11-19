@@ -58,6 +58,9 @@ namespace vermell {
 
         // Size cap for a single served file (same default as RenderSecurity).
         size_t max_file_bytes = 32UL * 1024UL * 1024UL;
+
+        // Serve dotfiles (.env, .git/). Off: 404 except /.well-known/ (CWE-538).
+        bool dotfiles = false;
     };
 
     // A single static mount: a URL prefix bound to a disk directory.
@@ -101,6 +104,8 @@ namespace vermell {
         [[nodiscard]] bool under_mount(const std::string_view decoded) const noexcept;
         // True when any '/' separated segment of `rel` is exactly "..".
         [[nodiscard]] static bool has_parent_segment(const std::string_view rel) noexcept;
+        // True when `rel` has a dot segment other than a leading ".well-known".
+        [[nodiscard]] static bool has_hidden_segment(const std::string_view rel) noexcept;
         // If-None-Match matching: comma list, "*", weak (W/) comparison.
         [[nodiscard]] static bool etag_matches(const std::string_view header,
                                                const std::string_view etag) noexcept;
@@ -149,6 +154,24 @@ namespace vermell {
                 return true;
             if (slash == std::string_view::npos)
                 break;
+            pos = slash + 1;
+        }
+        return false;
+    }
+
+    inline bool StaticMount::has_hidden_segment(const std::string_view rel) noexcept {
+        size_t pos = 0;
+        bool first = true;
+        while (pos <= rel.size()) {
+            const size_t slash = rel.find('/', pos);
+            const std::string_view segment = rel.substr(
+                pos, slash == std::string_view::npos ? std::string_view::npos : slash - pos);
+            if (!segment.empty() && segment.front() == '.'
+                && !(first && segment == ".well-known"))
+                return true;
+            if (slash == std::string_view::npos)
+                break;
+            first = false;
             pos = slash + 1;
         }
         return false;
@@ -293,6 +316,10 @@ namespace vermell {
         // wall).
         if (rel.find('\0') != std::string::npos || has_parent_segment(rel))
             return respond(403, "Vermell: forbidden path", vermell::mime::plain);
+
+        // 404, not 403: existence is not disclosed.
+        if (!options_.dotfiles && has_hidden_segment(rel))
+            return respond(404, "Vermell: 404 Not Found", vermell::mime::plain);
 
         std::string full = dir_.empty() ? "." : dir_;
         if (full.back() != '/')

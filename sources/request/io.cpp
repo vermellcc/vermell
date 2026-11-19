@@ -372,6 +372,7 @@ void RequestIO::ServeRequest(const int fd, std::string raw) const {
     base.setPort(connection->getPort());
     base.setSocketId(fd);
     base.setWriteTimeout(config_snapshot()->write_timeout);
+    base.setResponseTimeout(config_snapshot()->response_timeout);
     base.setResponse(std::move(raw));
 
     const bool keep_alive = ExecuteRoute(base, routes);
@@ -386,6 +387,7 @@ bool RequestIO::serve_inline(const int fd, std::string raw) const {
     base.setPort(connection->getPort());
     base.setSocketId(fd);
     base.setWriteTimeout(config_snapshot()->write_timeout);
+    base.setResponseTimeout(config_snapshot()->response_timeout);
     base.setResponse(std::move(raw));
 
     const bool keep_alive = ExecuteRoute(base, routes);

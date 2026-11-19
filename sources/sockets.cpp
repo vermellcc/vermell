@@ -1,5 +1,6 @@
 #include <memory>
 #include <poll.h>
+#include <chrono>
 #include <cerrno>
 #include <sys/uio.h>
 #include <netinet/tcp.h>
@@ -225,6 +226,7 @@ void Server::sendResponse(const string& head, const string& body) const {
      size_t lens[2] = { head.size(), body.size() };
      size_t done = 0;
      const size_t total = lens[0] + lens[1];
+     const auto deadline = std::chrono::steady_clock::now() + response_timeout_;
 
      while (done < total) {
           iovec iov[2];
@@ -258,11 +260,18 @@ void Server::sendResponse(const string& head, const string& body) const {
                continue;
 
           if (bytes_send == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+               // Wait bounded by write_timeout and the response deadline.
+               const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()).count();
+               if (left <= 0)
+                    break;
+               const int wait_ms = static_cast<int>(std::min<long long>(left, write_timeout_ms));
+
                pollfd pfd{};
                pfd.fd = fd;
                pfd.events = POLLOUT;
 
-               if (poll(&pfd, 1, write_timeout_ms) > 0 && (pfd.revents & POLLOUT))
+               if (poll(&pfd, 1, wait_ms) > 0 && (pfd.revents & POLLOUT))
                     continue;
           }
 

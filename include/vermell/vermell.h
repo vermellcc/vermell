@@ -247,6 +247,7 @@ Vermell<T>& Vermell<T>::configure(const vermell::Config& config) noexcept {
     };
     config_.read_timeout    = clamp_ms(config_.read_timeout);
     config_.write_timeout   = clamp_ms(config_.write_timeout);
+    config_.response_timeout = clamp_ms(config_.response_timeout);
     config_.request_timeout = clamp_ms(config_.request_timeout);
     config_.epoll_timeout   = clamp_ms(config_.epoll_timeout);
 
