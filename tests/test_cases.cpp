@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 
@@ -1736,3 +1737,107 @@ TEST_F(TestSuite, TestExactRouteWinsOverPattern) {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Security regressions (CVE classes)
+// ---------------------------------------------------------------------------
+
+// CVE-2019-16276, CVE-2020-7238
+TEST(SecurityRegression, WhitespaceBeforeColonIsRejected) {
+     EXPECT_EQ(Msg::inspect("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding : chunked\r\n\r\n"
+                            "0\r\n\r\n").framing,
+               Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect("POST / HTTP/1.1\r\nHost: x\r\nContent-Length\t: 5\r\n\r\nhello").framing,
+               Framing::BadRequest);
+     EXPECT_FALSE(Msg::parse("GET / HTTP/1.1\r\nHost : x\r\n\r\n").has_value());
+}
+
+// CVE-2022-35256, CVE-2024-27982
+TEST(SecurityRegression, ControlCharsInHeaderValueAreRejected) {
+     EXPECT_EQ(Msg::inspect([] {
+                                 static constexpr char raw[] = "GET / HTTP/1.1\r\nHost: x\r\nX-A: a\0b\r\n\r\n";
+                                 return string(raw, sizeof raw - 1);
+                            }()).framing,
+               Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect("GET / HTTP/1.1\r\nHost: x\r\nX-A: a\rb\r\n\r\n").framing,
+               Framing::BadRequest);
+     EXPECT_FALSE(Msg::parse("GET / HTTP/1.1\r\nHost: x\r\nX-A: a\x01" "b\r\n\r\n").has_value());
+     // HTAB inside a value is legal.
+     const auto ok = Msg::parse("GET / HTTP/1.1\r\nHost: x\r\nX-A: a\tb\r\n\r\n");
+     ASSERT_TRUE(ok.has_value());
+     EXPECT_EQ(ok->header("X-A"), "a\tb");
+}
+
+// CVE-2025-22871
+TEST(SecurityRegression, BareLfInChunkLineIsRejected) {
+     const string head = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+     EXPECT_EQ(Msg::inspect(head + "5;ext\nX\r\nhello\r\n0\r\n\r\n").framing, Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect(head + "5;ext\rX\r\nhello\r\n0\r\n\r\n").framing, Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect(head + "5\r\nhello\r\n0\r\nX-T: a\nb\r\n\r\n").framing, Framing::BadRequest);
+     EXPECT_EQ(Msg::inspect(head + "5\r\nhello\r\n0\r\nnot-a-field\r\n\r\n").framing, Framing::BadRequest);
+     // Well-formed extension and trailer are still accepted.
+     const string ok = head + "5;name=v\r\nhello\r\n0\r\nX-T: a\r\n\r\n";
+     EXPECT_EQ(Msg::inspect(ok).framing, Framing::Complete);
+     const auto msg = Msg::parse(ok);
+     ASSERT_TRUE(msg.has_value());
+     EXPECT_EQ(msg->body, "hello");
+}
+
+// RFC 9112 §6.1
+TEST(SecurityRegression, ChunkedOnHttp10IsRejected) {
+     const string wire = "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+     EXPECT_EQ(Msg::inspect(wire).framing, Framing::BadRequest);
+     EXPECT_FALSE(Msg::parse(wire).has_value());
+}
+
+// CWE-22
+TEST(SecurityRegression, RouteCapturesRejectTraversal) {
+     const auto star = split_path("/files/*");
+     EXPECT_FALSE(match_pattern(star, split_path("/files/..%2F..%2F.env")).has_value());
+     EXPECT_FALSE(match_pattern(star, split_path("/files/a/../../etc/passwd")).has_value());
+     EXPECT_FALSE(match_pattern(star, split_path("/files/%2e%2e/x")).has_value());
+     EXPECT_FALSE(match_pattern(star, split_path("/files/a%00b")).has_value());
+
+     const auto param = split_path("/users/:id");
+     EXPECT_FALSE(match_pattern(param, split_path("/users/..")).has_value());
+     EXPECT_FALSE(match_pattern(param, split_path("/users/..%2f..%2fetc%2fpasswd")).has_value());
+     EXPECT_FALSE(match_pattern(param, split_path("/users/..%5c..%5cwin.ini")).has_value());
+
+     // Legit values are untouched.
+     const auto ok = match_pattern(star, split_path("/files/a/b..c/d.txt"));
+     ASSERT_TRUE(ok.has_value());
+     EXPECT_EQ(ok->front().second, "a/b..c/d.txt");
+     const auto id = match_pattern(param, split_path("/users/john.doe"));
+     ASSERT_TRUE(id.has_value());
+     EXPECT_EQ(id->front().second, "john.doe");
+}
+
+// CWE-538
+TEST(SecurityRegression, StaticMountHidesDotfiles) {
+     namespace fs = std::filesystem;
+     const fs::path root = fs::temp_directory_path() / ("vermell_dot_" + std::to_string(::getpid()));
+     fs::create_directories(root / ".git");
+     fs::create_directories(root / ".well-known");
+     std::ofstream(root / ".env") << "SECRET=1";
+     std::ofstream(root / ".git" / "config") << "[core]";
+     std::ofstream(root / ".well-known" / "security.txt") << "Contact: x";
+     std::ofstream(root / "index.html") << "<h1>ok</h1>";
+
+     const vermell::StaticMount hidden("/", root.string(), { .spa = true });
+     for (const char* p : {"/.env", "/.git/config", "/%2eenv", "/sub/.env"}) {
+          const auto r = hidden.serve(p, "GET");
+          ASSERT_TRUE(r.has_value()) << p;
+          EXPECT_NE(r->head.find(" 404 "), string::npos) << p;
+          EXPECT_EQ(r->body.find("SECRET"), string::npos) << p;
+     }
+     const auto wk = hidden.serve("/.well-known/security.txt", "GET");
+     ASSERT_TRUE(wk.has_value());
+     EXPECT_NE(wk->head.find(" 200 "), string::npos);
+
+     const vermell::StaticMount shown("/", root.string(), { .dotfiles = true });
+     const auto env = shown.serve("/.env", "GET");
+     ASSERT_TRUE(env.has_value());
+     EXPECT_NE(env->head.find(" 200 "), string::npos);
+
+     fs::remove_all(root);
+}

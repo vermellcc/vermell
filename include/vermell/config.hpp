@@ -40,6 +40,8 @@ namespace vermell {
         std::chrono::milliseconds request_timeout{60000};
         // Inactivity timeout while writing the response back to the client.
         std::chrono::milliseconds write_timeout{5000};
+        // Hard deadline for writing a whole response (slow-read DoS, CWE-400).
+        std::chrono::milliseconds response_timeout{60000};
         // Hard limit for a whole request (headers + body). Requests bigger
         // than this are rejected with 413 Payload Too Large.
         size_t max_request_size = 4UL * 1024UL * 1024UL;

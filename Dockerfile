@@ -1,6 +1,8 @@
-FROM debian:bookworm AS builder
+# Debian 13 + security updates (bookworm image CVEs).
+FROM debian:trixie AS builder
 
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
@@ -18,9 +20,10 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel \
     && DESTDIR=/stage cmake --install build
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \

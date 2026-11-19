@@ -149,6 +149,7 @@ int main() {
         .read_timeout     = std::chrono::seconds{30},
         .request_timeout  = std::chrono::seconds{60},
         .write_timeout    = std::chrono::seconds{10},
+        .response_timeout = std::chrono::seconds{60}, // hard cap per response (slow-read DoS)
         .max_request_size = 16UL * 1024 * 1024,
         .threads          = 4,
         .max_connections  = 1024,
@@ -185,6 +186,8 @@ router.staticX("/", "./dist", {
 ```
 
 Directory traversal attempts (`..`, NUL bytes) are automatically blocked.
+Dotfiles (`.env`, `.git/`, ...) answer 404 by default, except `/.well-known/`;
+set `.dotfiles = true` only if you really need to serve them.
 
 ## Templates
 

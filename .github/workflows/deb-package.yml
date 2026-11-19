@@ -5,15 +5,15 @@ on:
     types: [ published ]
   workflow_dispatch:
 
-permissions:
-  contents: write   
-  pages: write      
-  id-token: write   
+# Least privilege per job.
+permissions: {}
 
 jobs:
   build-deb:
     name: Build .deb (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +30,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0   
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -43,17 +44,27 @@ jobs:
 
       - name: Derive version from tag
         id: version
+        # Via env, not ${{ }} in run: (script injection, CWE-94).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "release" ]; then
+            VERSION="$RELEASE_TAG"
+          elif [ "$EVENT_NAME" = "push" ]; then
             VERSION="${GITHUB_REF_NAME}"
           else
             # manual run: latest reachable tag, e.g. v1.0.5 -> 1.0.5
             VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0')"
           fi
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          VERSION="${VERSION#v}"
+          # Semver only.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+~-][0-9A-Za-z.+~-]+)?$'; then
+            echo "::error::invalid version string"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Configure CMake (Release, native)
         if: matrix.toolchain == ''
@@ -82,7 +93,7 @@ jobs:
           dpkg-deb --info build/*.deb
 
       - name: Upload .deb as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: libvermell-deb-${{ matrix.arch }}
           path: build/*.deb
@@ -93,10 +104,12 @@ jobs:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     needs: build-deb
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all .deb artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: libvermell-deb-*
           merge-multiple: true
@@ -106,11 +119,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
-            RELEASE_TAG="${{ github.event.release.tag_name }}"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "release" ]; then
+            RELEASE_TAG="$EVENT_RELEASE_TAG"
+          elif [ "$EVENT_NAME" = "push" ]; then
             RELEASE_TAG="${GITHUB_REF_NAME}"
           else
             RELEASE_TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
@@ -126,13 +141,17 @@ jobs:
     name: Publish apt repository to GitHub Pages
     needs: build-deb
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Download all .deb artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: libvermell-deb-*
           merge-multiple: true
@@ -200,13 +219,13 @@ jobs:
           gpg --export > vermell-apt-key.gpg
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: apt-repo
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

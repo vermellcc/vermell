@@ -70,6 +70,24 @@ using std::string;
     return out;
 }
 
+// Capture with "."/".." segments or NUL: path traversal (CWE-22).
+[[nodiscard]] inline bool unsafe_capture(const std::string_view value) noexcept {
+    if (value.find('\0') != std::string_view::npos)
+        return true;
+    size_t pos = 0;
+    while (pos <= value.size()) {
+        const size_t sep = value.find_first_of("/\\", pos);
+        const std::string_view seg = value.substr(
+            pos, sep == std::string_view::npos ? std::string_view::npos : sep - pos);
+        if (seg == ".." || seg == ".")
+            return true;
+        if (sep == std::string_view::npos)
+            break;
+        pos = sep + 1;
+    }
+    return false;
+}
+
 // Matches a compiled pattern (literals, ":name", "*") against the request's
 // segments. On success it returns the captured parameters: ":name" yields a
 // percent-decoded value, and a trailing "*" yields the joined remainder under
@@ -86,13 +104,19 @@ match_pattern(const std::vector<string>& pattern, const std::vector<string>& pat
                     remainder += '/';
                 remainder += path[j];
             }
-            params.emplace_back("*", vermell::http::percent_decode(remainder));
+            string decoded = vermell::http::percent_decode(remainder);
+            if (unsafe_capture(decoded))
+                return std::nullopt; // traversal attempt: no match (404)
+            params.emplace_back("*", std::move(decoded));
             return params;
         }
         if (i >= path.size())
             return std::nullopt;
         if (seg.size() > 1 && seg.front() == ':') {
-            params.emplace_back(seg.substr(1), vermell::http::percent_decode(path[i]));
+            string decoded = vermell::http::percent_decode(path[i]);
+            if (unsafe_capture(decoded))
+                return std::nullopt; // traversal attempt: no match (404)
+            params.emplace_back(seg.substr(1), std::move(decoded));
         } else if (seg != path[i]) {
             return std::nullopt;
         }

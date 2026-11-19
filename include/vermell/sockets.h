@@ -106,6 +106,8 @@ class Server final : public Engine {
      int epoll_fd, notices;
 
      int write_timeout_ms = 5000;
+     // Slow-read cap (CWE-400).
+     std::chrono::milliseconds response_timeout_{60000};
 
      // SO_REUSEPORT is opt-in (Config::reuse_port): when off, no other
      // same-UID process can bind the same port and intercept traffic.
@@ -138,6 +140,10 @@ class Server final : public Engine {
           write_timeout_ms = std::clamp(static_cast<long long>(timeout.count()),
                                         1LL,
                                         static_cast<long long>(std::numeric_limits<int>::max()));
+     }
+     // Hard deadline per response (slow-read DoS, CWE-400).
+     inline void setResponseTimeout(const std::chrono::milliseconds timeout) noexcept {
+          response_timeout_ = timeout.count() < 1 ? std::chrono::milliseconds{1} : timeout;
      }
      inline void setReusePort(const bool enable) noexcept { reuse_port_ = enable; }
      void sendResponse(const string& head, const string& body) const;
