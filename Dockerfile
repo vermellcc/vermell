@@ -1,4 +1,4 @@
-# Build stage: the toolchain only lives here, it is not shipped.
+# Build stage: compile the library with a throwaway toolchain.
 FROM debian:trixie-slim AS builder
 
 RUN apt-get update \
@@ -18,8 +18,15 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel \
     && DESTDIR=/stage cmake --install build
 
-# Runtime image: library and headers only.
+# Runtime image: library, headers and the toolchain used to build against it.
+# Same base and same apt line as the build stage, so the layer is shared.
 FROM debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage/usr/local /usr/local
 
