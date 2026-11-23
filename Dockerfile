@@ -1,8 +1,7 @@
-# Debian 13 + security updates (bookworm image CVEs).
-FROM debian:trixie AS builder
+# Build stage: the toolchain only lives here, it is not shipped.
+FROM debian:trixie-slim AS builder
 
 RUN apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
@@ -14,20 +13,13 @@ COPY CMakeLists.txt README.md ./
 COPY cmake ./cmake
 COPY sources ./sources
 COPY include ./include
-COPY tests ./tests
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel \
     && DESTDIR=/stage cmake --install build
 
+# Runtime image: library and headers only.
 FROM debian:trixie-slim
-
-RUN apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        cmake \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage/usr/local /usr/local
 
