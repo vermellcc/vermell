@@ -1383,13 +1383,25 @@ TEST_F(TestSuite, TestBareLfRejectedOverHttp) {
 }
 
 TEST(ThreadPoolBackpressureTest, TryAddTaskShedsWhenFull) {
-     // Capacity is at least 1024 (queue_capacity); a long-running first task
-     // pins the single worker so the queue stays full while we fill it.
+     // Capacity is 2048. The first task pins the single worker and signals once
+     // it is running, so the queue is empty when we start filling it: no race
+     // with the worker dequeuing it under us.
      threading::ThreadPool pool(1, 2048);
-     auto first = pool.addTask([] { std::this_thread::sleep_for(std::chrono::seconds{5}); });
+
+     std::promise<void> started;
+     std::atomic<bool> release{false};
+     auto first = pool.addTask([&] {
+         started.set_value();
+         while (!release.load())
+             std::this_thread::sleep_for(std::chrono::milliseconds{1});
+     });
+     started.get_future().wait();
+
      for (int i = 0; i < 2048; ++i)
          EXPECT_TRUE(pool.tryAddTask([] {})); // fits up to the configured cap
      EXPECT_FALSE(pool.tryAddTask([] {}));    // full: shed, never block
+
+     release.store(true);
      first.get();
 }
 
