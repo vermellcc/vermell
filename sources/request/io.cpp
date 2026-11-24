@@ -4,6 +4,7 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <utility>
 #include <sys/uio.h>
 
 namespace {
@@ -40,6 +41,42 @@ namespace {
         if (vermell::http::detail::iequals(conn, "keep-alive"))
             return true;
         return !message.version.starts_with("HTTP/1.0");
+    }
+
+    std::pair<size_t, size_t> connection_value_span(const std::string& head) {
+        const std::string_view name = "connection:";
+        size_t line = head.find("\r\n");
+        if (line == std::string::npos)
+            return {std::string::npos, std::string::npos};
+        line += 2;
+        while (line < head.size()) {
+            const size_t eol = head.find("\r\n", line);
+            const size_t line_end = eol == std::string::npos ? head.size() : eol;
+            if (line_end == line)
+                break;
+            if (static_cast<size_t>(line_end - line) >= name.size()) {
+                bool match = true;
+                for (size_t i = 0; i < name.size(); ++i) {
+                    char c = head[line + i];
+                    if (c >= 'A' && c <= 'Z')
+                        c = static_cast<char>(c - 'A' + 'a');
+                    if (c != name[i]) { match = false; break; }
+                }
+                if (match) {
+                    size_t v = line + name.size();
+                    while (v < line_end && (head[v] == ' ' || head[v] == '\t'))
+                        ++v;
+                    size_t end = line_end;
+                    while (end > v && (head[end - 1] == ' ' || head[end - 1] == '\t'))
+                        --end;
+                    return {v, end};
+                }
+            }
+            if (eol == std::string::npos)
+                break;
+            line = eol + 2;
+        }
+        return {std::string::npos, std::string::npos};
     }
 
 } // namespace
@@ -618,12 +655,18 @@ bool RequestIO::ExecuteRoute(Server& instance, const shared_ptr<RoutesMap> &rout
 
     if (!allow_keep_alive_)
         keep_alive = false;
-    if (send_target.head.find("Connection: close") != string::npos)
-        keep_alive = false;
-    if (!keep_alive) {
-        const size_t pos = send_target.head.find("Connection: keep-alive");
-        if (pos != string::npos)
-            send_target.head.replace(pos + 12, 10, "close");
+
+    const auto [cv_begin, cv_end] = connection_value_span(send_target.head);
+    if (cv_begin != string::npos) {
+        const std::string_view value(send_target.head.data() + cv_begin, cv_end - cv_begin);
+        if (vermell::http::detail::iequals(value, "close"))
+            keep_alive = false;
+        if (!keep_alive)
+            send_target.head.replace(cv_begin, cv_end - cv_begin, "close");
+    } else if (!keep_alive) {
+        const size_t blank = send_target.head.rfind("\r\n\r\n");
+        if (blank != string::npos)
+            send_target.head.insert(blank + 2, "Connection: close\r\n");
     }
 
     instance.sendResponse(send_target.head, send_target.body);

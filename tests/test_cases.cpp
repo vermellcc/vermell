@@ -1669,6 +1669,24 @@ TEST_F(TestSuite, TestPipelinedRequestsAreSeparated) {
      EXPECT_EQ(res.find("second", second + 6), string::npos); // "second" appears once
 }
 
+TEST_F(TestSuite, TestConnectionRewriteIgnoresDecoyHeaderValue) {
+     Router router;
+     const uint16_t port = free_port();
+     router.setPort(port);
+     router.get("/", {[&](Query &http) {
+          http.setHeaders(HEADERS{ "X-Echo: Connection: keep-alive" });
+          http.send("body");
+     }});
+
+     ISOLATE( router.listenOne(); )
+     const string res = raw_exchange(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+     isolate_method.get();
+
+     EXPECT_NE(res.find("\r\nConnection: close\r\n"), string::npos);
+     EXPECT_NE(res.find("X-Echo: Connection: keep-alive"), string::npos);
+     EXPECT_EQ(res.find("X-Echo: Connection: close"), string::npos);
+}
+
 // Parameterized routes: "/users/:id" captures one path segment.
 TEST_F(TestSuite, TestRouteParamCapturesSegment) {
      Router router;
