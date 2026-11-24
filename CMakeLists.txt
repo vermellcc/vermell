@@ -50,17 +50,17 @@ if (TESTING)
 
 endif ()
 
-# Optional libFuzzer harness for the HTTP parser (security hardening). Build
-# with: cmake -S . -B build-fuzz -DVERMELL_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
-option(VERMELL_FUZZ "Build the libFuzzer harness for the HTTP parser" OFF)
+option(VERMELL_FUZZ "Build the libFuzzer harnesses for the parsers" OFF)
 if(VERMELL_FUZZ)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "VERMELL_FUZZ requires Clang (libFuzzer)")
     endif()
-    add_executable(fuzz_message tests/fuzz/message_fuzz.cpp)
-    target_include_directories(fuzz_message PRIVATE "${CMAKE_SOURCE_DIR}/include")
-    target_compile_options(fuzz_message PRIVATE -fsanitize=fuzzer,address,undefined)
-    target_link_options(fuzz_message PRIVATE -fsanitize=fuzzer,address,undefined)
+    foreach(fuzzer message json multipart)
+        add_executable(fuzz_${fuzzer} tests/fuzz/${fuzzer}_fuzz.cpp)
+        target_include_directories(fuzz_${fuzzer} PRIVATE "${CMAKE_SOURCE_DIR}/include")
+        target_compile_options(fuzz_${fuzzer} PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_${fuzzer} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
 endif()
 
 include(GNUInstallDirs)
